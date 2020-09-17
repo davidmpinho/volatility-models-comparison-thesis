@@ -29,7 +29,7 @@ Once it is available (which is after I am evaluated), I will link the full artic
 ## How to run the code 
 
 1. Install R version 3.6.3 (other versions should work fine, but no guarantees).
-2. Install the packages in requirements.txt. 
+2. Install the packages in requirements.md. 
 3. Run the scripts in the *R_exec* folder in the order of the file names -- first run
    *0_clean_raw_data.R*, then *1_create_volatility_measures.R*, and so on.  You can choose
    to skip some of these (for example, skip the first script if you already have
