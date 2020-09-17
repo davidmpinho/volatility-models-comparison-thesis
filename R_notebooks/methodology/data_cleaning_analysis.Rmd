@@ -1,0 +1,738 @@
+---
+title: "Data cleaning"
+date: '2020-09-07'
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+author: David Pinho
+---
+
+Note: some of this is a bit disjointed, but that's how the sausage was made. 
+
+## What criteria to use when cleaning the data?
+
+Most authors seem to have a set of objective rules, and then they manually see
+if there are any other observations worth excluding. For example, Liu et al.
+(2015) exclude all days with less than 60% of the standard daily time range.
+Bardorff-Nielsen et al. (2009) make a deeper analysis and cite other relevant
+articles. 
+
+### References
+
+"Does anything beat 5-minute RV? A comparison of realized measures across
+multiple asset classes" by Liu, Patton, and Sheppard, 2015 
+
+"Realized kernels in practice: trades and quotes" by Bardorff-Nielsen, Hansen,
+Lunde and Shephard, 2009 (Journal of Econometrics) 
+
+## Libraries
+
+```{r}
+library(namespace)
+library(data.table)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+
+data.table::setDTthreads(threads=10)
+```
+
+## Global variables
+
+```{r}
+date_first <- as.Date("2000-01-01")
+date_last <- as.Date("2010-12-31")
+time_gmt_start <- as.ITime("08:00:00")
+time_gmt_end <- as.ITime("16:30:00")
+time_bst_start <- as.ITime("07:00:00")
+time_bst_end <- as.ITime("15:30:00")
+
+# Could not get knitr to set the path on the school's PC, so this had to do  
+path_raw_data <- 'C://Users//pg36869//Desktop//thesis-master-finance//data//ftse100//raw_data//'
+
+# Source: https://www.dmo.gov.uk/media/15008/ukbankholidays.xls (saved as a csv file)
+path_uk_holidays <- paste0(path_raw_data, 'ukbankholidays.csv')
+
+# Source: https://greenwichmeantime.com/uk/time/british-summer-time/dates/ (copy-pasted everything to an excel file from 2000 to 2010, and saved as a csv file)
+path_bst_time <- paste0(path_raw_data, 'bst.csv')
+
+# Source: https://realized.oxford-man.ox.ac.uk/images/oxfordmanrealizedvolatilityindices-0.2-final.zip (extracted file, saved as csv)
+path_rv_data <- paste0(path_raw_data, 'OxfordManRealizedVolatilityIndices.csv')
+
+# Source: https://realized.oxford-man.ox.ac.uk/images/oxfordmanrealizedvolatilityindices.zip 
+# (extracted file, which was already a csv, converted eveything to a DD-MM-YYYY format,
+# and saved it as oxfordmanrealizedvolatilityindices2.csv)
+path_rv_data_alt <- paste0(path_raw_data, 'oxfordmanrealizedvolatilityindices2.csv')
+
+# Source: Eikon Datastream; requested data from 04-01-2000 to 27-06-2019,
+# named the columns "date" and "vftse" respectively, and saved as a csv
+path_vftse <- paste0(path_raw_data, 'vftse.csv')
+```
+
+```{r}
+# Loading the aggregate_data function. 
+source(file='C://Users//pg36869//Desktop//thesis-master-finance//R_scripts//1_generate_measures.R')
+```
+
+
+## Data variables
+
+```{r}
+data_ftse <- aggregate_data(path_data=path_raw_data, 
+                            regex_pattern='20[0-9][0-9].txt')
+data_ftse[ , date := as.Date(date)]
+data_ftse[ , time := data.table::as.ITime(time)]
+
+# Returns
+data_ftse[ , returns := (price / data.table::shift(price) - 1)]
+data_ftse[ , time_change := as.numeric(time - data.table::shift(time))]
+
+# Holidays
+data_uk_holidays <- data.table::fread(path_uk_holidays, header=FALSE)
+data_uk_holidays <- data_uk_holidays[3:length(V1), V1]
+data_uk_holidays <- as.Date(data_uk_holidays,
+                           format="%d-%b-%Y")
+data_uk_holidays <- data_uk_holidays[(data_uk_holidays >= date_first) 
+                                     & (data_uk_holidays <= date_last)]
+
+# GMT/BST 
+data_bst_time <- data.table::fread(path_bst_time, header=FALSE, stringsAsFactors=FALSE)
+colnames(data_bst_time) <- c('start', 'end')
+data_bst_time[ , start:=as.Date(start, format="%d-%m-%Y")]
+data_bst_time[ , end:=as.Date(end, format="%d-%m-%Y")]
+
+# Data from Sheppard and Shephard (OxfordMan)
+data_paper <-  data.table::fread(path_rv_data, header=FALSE)
+data_paper <- data_paper[ , c('V1', 'V21')]
+data_paper <- data_paper[4:length(V1), ]
+colnames(data_paper) <- c('date', 'rv')
+data_paper[ , date := as.Date(date, format="%Y%m%d")]
+data_paper <- data_paper %>% subset((date < as.Date("2011-01-01"))
+                                     & (rv != ""))  # Some rows are empty
+
+# Other data from OxfordMan with an updated methodology (to check for differences)
+data_paper_alt <-  data.table::fread(path_rv_data, header=FALSE)
+data_paper_alt <-  data_paper_alt[ , c('V1', 'V21')]
+data_paper_alt <- data_paper_alt[4:length(V1), ]
+colnames(data_paper_alt) <- c('date', 'rv')
+data_paper_alt[ , date := as.Date(date, format="%Y%m%d")]
+data_paper_alt <- data_paper_alt %>% subset((date < as.Date("2011-01-01"))
+                                     & (rv != "")) # Some rows are empty
+
+# VFTSE data 
+data_vftse <- data.table::fread(path_vftse, header=TRUE)
+data_vftse[ , date := as.Date(date, format="%d-%m-%Y")]
+data_vftse <- data_vftse[date <= as.Date("2011-01-01")]
+data_vftse[ , vftse := as.numeric(sub(",", "..", vftse , fixed <- TRUE))]
+```
+
+
+## Flagging potential errors
+
+```{r}
+# Duplicated data (eliminates all but the last row in a group of duplicates)
+duplicated <- duplicated(data_ftse[ , c("date", "time")], 
+                        fromLast=TRUE)
+data_ftse <- data_ftse[ , is_duplicated := duplicated]
+
+# Day changes and ordered days
+data_ftse[ , is_day_change := ((date - data.table::shift(date)) > 0)]
+data_ftse[ , is_unordered_day := ((date - data.table::shift(date)) < 0)]
+
+# Ordered time
+data_ftse[ , is_unordered_time := ((time_change < 0) 
+                                   & (is_day_change == FALSE))]
+
+# Price is 0 or negative
+data_ftse[ , is_wrong_price := (price <= 0)]
+
+# Extreme returns 
+data_ftse[ , returns_per_time := abs(returns) / sqrt(abs(time_change))]
+
+# Weekends
+data_ftse[ , is_weekend := ((wday(date) == 7) | (wday(date) == 1))]
+
+# BST time
+dates_bst <- unlist(Map(`:`,  # maybe change this to "seq"
+                       data_bst_time$start,
+                       data_bst_time$end))
+data_ftse[ , is_bst_time := date %in% dates_bst]
+
+# Observations that are off-hours (8:00-16:30 GMT or 7:00-15:30 BST)
+dt_time <- data_ftse$time
+is_gmt <- !(data_ftse$is_bst_time)
+is_bst <- (data_ftse$is_bst_time)
+off_hours_gmt <- (((dt_time < time_gmt_start)
+                    | (dt_time > time_gmt_end)) 
+                 & is_gmt)
+off_hours_bst <- (((dt_time < time_bst_start) 
+                    | (dt_time > time_bst_end))
+                 & is_bst)
+data_ftse[ , is_off_hours := (off_hours_bst | off_hours_gmt)]
+
+# Holidays
+data_ftse[ , is_holiday := (date %in% data_uk_holidays)]
+
+# RV data
+data_ftse[ , in_rv_dates := (date %in% data_paper$date)]
+data_ftse[ , in_rv_dates_alt := (date %in% data_paper_alt$date)]
+
+# vftse data
+data_ftse[ , in_vftse_dates := (date %in% data_vftse$date)]
+```
+
+
+## Analyzing anomalies
+
+###  Variables without errors
+
+```{r}
+# All of these don't return anything
+data_ftse[(is_holiday)]  
+data_ftse[(is_unordered_day)]  
+data_ftse[(is_wrong_price)]
+data_ftse[(is_weekend)]  
+```
+
+
+### "Duplicated" data
+
+```{r}
+head(data_ftse[(is_duplicated)], 10)  # Remove head if you want to inspect the data; this is true from now on
+```
+
+These are returns that happened in the exact same day and time. Note that
+"is_duplicated" doesn't flag the last observation in a group of duplicated
+observations. 
+
+These won't have any influence on the analysis because to create n minute
+returns, you only need the last observation. But I'll them because so that 
+I do not use as much RAM.
+
+
+### Are times correctly ordered?
+
+```{r}
+head(data_ftse[order(time_change) & (is_unordered_time)])  
+```
+
+**Deleted observations**: 78 from 2009-11-30 where `in_unordered_time == TRUE`.
+It's most likely an error because:
+- All of these returns happened inside trading hours; 
+- They generally only decrease one/two seconds relative to their previous
+  observation; 
+- They're extremely small returns (median 'returns_per_time' is almost 2x
+  bigger than the median of these returns); 
+- There was no news on this day.
+
+
+### Are there observations outside trading hours?
+
+```{r}
+data_ftse[(is_off_hours)] %>% 
+  ggplot() + 
+  geom_point(aes(y=date, x=as.numeric(time)),
+             shape= 19, size=0.1)
+```
+
+```{r}
+data_ftse[(is_off_hours) 
+           & (as.numeric(time) < 55800)]$time  # 55800 is 15:30
+```
+
+```{r}
+data_ftse[(is_off_hours & order(time))] %>%
+  count(date, sort=TRUE) %>% 
+  head
+```
+
+```{r}
+anomalous_dates <- data_ftse[(date == as.Date('2010-03-29'))
+                             | (date == as.Date('2010-03-30'))
+                             | (date == as.Date('2010-03-31'))
+                             | (date == as.Date('2000-04-05'))]
+anomalous_dates[order(date), tail(.SD, 5L), by=date]
+anomalous_dates[order(date), head(.SD, 5L), by=date]
+```
+
+```{r}
+# Days with an intermediate amount of off-hours time
+list_bad_days <- data_ftse[(is_off_hours & order(time))] %>% 
+                    count(date, sort=TRUE)
+interm_day <- setDT(list_bad_days)[(n<399) & (n>2)]$date
+data_ftse[(date %in% interm_day) & (is_off_hours == TRUE)] %>% 
+  ggplot() +
+  geom_point(aes(x=date, y=as.numeric(time)))
+```
+
+```{r}
+small_days <- setDT(list_bad_days)[(n < 3)]$date
+data_ftse[(date %in% small_days) & (is_off_hours)] %>% 
+  ggplot() +
+  geom_point(aes(x=date, y=as.numeric(time)), shape=19, size=0.1)
+```
+
+```{r}
+# These return nothing
+data_ftse[(date %in% small_days) & (is_off_hours)
+           & (is_bst) & (time < as.ITime("15:30"))] 
+data_ftse[(date %in% small_days) & (is_off_hours)
+           & (is_bst) & (time < as.ITime("07:00"))] 
+```
+
+```{r}
+data_ftse[(date %in% small_days) & (is_off_hours)
+           & (!is_bst) & (time < as.ITime("16:30"))] # only returns periods before 08:00:00
+```
+
+```{r}
+data_ftse[(date %in% small_days) & (is_off_hours)
+           & (!is_bst) & (time < as.ITime("08:00"))] # only returns periods before 08:00:00
+```
+
+```{r}
+data_ftse[(date %in% small_days) & (is_off_hours)]$returns_per_time %>% 
+    na.omit() %>%
+    median()
+```
+
+```{r}
+data_ftse[(date %in% small_days) & (!is_off_hours)]$returns_per_time %>% 
+    na.omit() %>%
+    median()
+```
+
+### Some notes:
+- About 2250 days (almost 9 years) with trading dates outside trading hours. Only 5 observations
+  starting before 8:00, and they all start at "07:59:59". Those won't be excluded. 
+- Besides those, there are no flagged observations starting below 15:30 (the chart can be
+  misleading in that aspect).
+- Every other day with 1 observation happens at 15:30+/16:30+. 
+- Most of the days with 5-30 prices outside trading hours are in 07/2002-10/2002 and
+  03/2000-04/2000. There's almost no exceptions to that. 
+- The 4 days with a lot of outside returns happen in the end of March-2010, from 15:30 to 16:30,
+  with the other being in the beginning of April-2000, but it goes up to 17:10. 
+
+### Explanation for errors
+- 2000-04-05 observations are *not* going to be deleted. There was a 
+  [technical problem](http://news.bbc.co.uk/2/hi/business/702573.stm). It says
+  that the price finished at 6379 at 18:30, and that's the price that on the data
+  provided by FTSE (on:
+  project_folder/data/raw_data/historic-ftse-index-values.xlsx) but in the
+  intraday data, the price finishes at 17:09:45 with a price of 6357.5, so it
+  seems some data is missing.  However, it's only 1 hour and the starting time is
+  correct. 
+- For 2010-03-29 to 2010-03-31, they finish just before 16:30, but start at
+  08:00. There were no news in those days. I'm going to assume that they either
+  changed the hours to BST too late, as they were suposed to change them by
+  2010-03-28, or the market opened at the right hours, but they didn't register
+  them correctly. 
+- For the days with an intermediate amount of off-hours priced (i.e., 40 > n >
+  2), there are a lot of days with observations that are well outside trading
+  hours, so those can be safely eliminated. For the other cases, I also eliminate
+  everything because the tendency is:
+    - They aren't close to changes in time zones, with the exception of
+      observations in 2000/03
+    - They cluster in some days
+    - There are no news pointing to any technical issues or other events. 
+- I delete the observations that only have 1 or 2 off-hours observations, as the graph
+  shows that these are mostly concentrated on returns ~15 minutes after the
+  market has closed. Again, the charts are misleading -- the plot makes some
+  straight lines that appear to be located in the time just after the market has
+  closed, but that's not the case. The observations below those lines are the
+  prices that happen just after the market closes.  In general, these seem to be
+  a systematic error or correction that the exchange is doing. The median return,
+  when you adjust for the time, is slightly smaller than the global mean, but
+  still within a reasonable interval. Those returns were the ones causing me a
+  lot of problems, and there is no apparent reason to keep them.
+  
+
+### Time changes that are too big
+
+```{r}
+# Every time change is positive or equal than 0 (see explanation)
+data_ftse[(!is_day_change) & (!is_unordered_time) 
+           & (!is_duplicated) & (!is_off_hours)][order(time_change)] %>% 
+  head
+```
+
+```{r}
+# Most of these observations don't look reasonable
+big_time_change <- data_ftse[((!is_day_change) & (!is_unordered_time)
+                              & (!is_duplicated) & (!is_off_hours)
+                              & (time_change > 60) & (returns != 0))][order(-time_change)]
+head(big_time_change)
+```
+
+```{r}
+# Closer look at each day with big anomalies (times are close to the big jumps in time)
+data_ftse[(date == as.Date("2003-04-14")) & (time > as.ITime("09:55:00"))]
+```
+
+```{r}
+head(data_ftse[(date == as.Date("2000-04-03"))])
+```
+
+```{r}
+head(data_ftse[(date == as.Date("2007-08-09") & (time > as.ITime("11:00:00")))])
+```
+
+```{r}
+head(data_ftse[(date == as.Date("2004-01-27") & (time > as.ITime("12:28:00")))])
+```
+
+```{r}
+head(data_ftse[(date == as.Date("2005-01-31") & (time > as.ITime("12:58:00")))])
+```
+
+```{r}
+# Where are the days with observations with >60 secs "time_change" concentrated?
+daily_data <- data_ftse[ , sum(na.omit(log(price / data.table::shift(price)))^2), by=date] # unclean-RV
+daily_data %>% 
+  ggplot() +
+  geom_point(aes(x=date, y=V1, color=(date %in% big_time_change$date)))
+```
+
+```{r}
+# By hour of day
+data_ftse[(!is_off_hours)][ , (sum(na.omit(time_change) > 60)
+                              / length(time_change)), by=data.table::hour(time)] %>% 
+    select(hour = 'data.table', V1) %>% 
+    ggplot() +
+    geom_bar(aes(x=hour, y=V1), stat="identity")
+```
+
+```{r}
+# What if I increase the interval to >600 secs?
+big_time_change <- big_time_change[time_change > 600]
+daily_data %>%
+  ggplot() +
+  geom_point(aes(x=date, y=V1,
+             color=(date %in% big_time_change$date),
+             alpha=0.25))
+```
+
+```{r}
+# By hour of day
+data_ftse[(!is_off_hours)][ , (sum(na.omit(time_change) > 600)
+                              / length(time_change)), by=hour(time)] %>% 
+    ggplot() +
+    geom_bar(aes(x=hour, y=V1), stat="identity")
+```
+
+```{r}
+# Interval to > 1800
+data_ftse[(!is_off_hours)][ , (sum(na.omit(time_change) > 1800)
+                              / length(time_change)), by=data.table::hour(time)] %>% 
+    select(hour = 'data.table', V1) %>%
+    ggplot() +
+    geom_bar(aes(x=hour, y=V1), stat="identity")
+```
+
+All returns that don't happen when "is_day_change" is TRUE should be (1)
+positive and (2) relatively small. Because I'm going to use 1 minute returns,
+it would be good if all time_change were smaller than 60 seconds.
+
+### Explanation for errors
+- There are a lot of observations with a 0 time_change because there were
+  duplicated prices. When all the prices except the last one are removed, these
+  returns will remain *with the wrong number of time_change and returns*. The
+  final clean file doesn't have this issue because it does calculations after the
+  removal of observations.
+
+### Days with news
+
+These are the only 3 days with news, and they're also the days with the biggest anomalies in the
+time between observations. **None of them are going to be deleted.**
+
+- 2003-04-14: There are observations until 10:00, followed by one last observation 
+  at 15:29:03. This is BST, so it's supposed to end at 15:30. The official price by FTSE is 3849.41. 
+  The price of the 10:00:00 observation is 3827.4, and the one from the last observation is 3852.7,
+  so this is likely to be a case of missing observations since there's no news. 
+- 2000-04-03: In the [article](http://news.bbc.co.uk/2/hi/business/702573.stm) 
+  previously mentioned, it said, "The latest problems came only two days after the FTSE 100 index 
+  was unavailable for four hours on Monday."
+- 2007-08-09: There was a
+  [shock](https://www.ft.com/content/a8c5829a-466e-11dc-a3be-0000779fd2ac), and this might be because
+  of it. I still don't have access to FT, so I can't say much more.
+  
+### Days without any news (ordered by the biggest time_change)
+
+These are the days where I checked for an anomaly, but I didn't find anything. Below 30 minutes
+there are way too many observations. Given that I didn't find anything wrong with the other ones, 
+I just inspected them visually (see graph above) and, again, didn't find anything suspect.
+
+#### More than one hour between observations
+
+2004-01-27, 2004-01-27, 2005-01-31, 2005-06-13, 2007-02-26, 2002-01-30
+
+#### Less than 1 hour and more than 30 minutes between observations
+
+2009-11-10, 2000-11-21, 2007-08-30, 2007-07-18, 2002-11-20, 2002-10-21,
+2007-08-29, 2005-02-01, 2001-03-05, 2005-03-29, 2000-11-23	
+
+
+### Days with too many anomalous observations
+
+If the other anomalous observations are a mistake by the exchange, there isn't
+much I can do about them.
+
+This is either a problem on the side of the exchange, or a lack of trading
+that's not generating the quotes. The observations cluster in times where the
+volatility is lower.
+
+They are also more frequent in every period except the mornings, which isn't
+very informative -- the volume is bigger at the start and end of the day, not
+just at the start. I would expect to see a slight upward bias here -- we are
+looking at observations after long periods without any of them -- but nothing
+that would come close to explaining that pattern.
+
+
+### Returns that are too large
+
+```{r}
+# Intraday returns that look suspicious
+data_ftse[(!is_day_change) & (!is_unordered_time) 
+            & (!is_duplicated) & (!is_off_hours)
+            & (returns != 0)][order(-abs(returns))] %>% 
+  head
+```
+
+```{r}
+# Realised volatility without data cleaned
+daily_data <- data_ftse[ , sum(na.omit(log(price / data.table::shift(price)))^2), by=date]
+big_ret_date <- data_ftse[ , sum(1*((na.omit(time_change) != 0)
+                                   & (na.omit(returns) >= 0.005))),
+                            by=date]
+big_ret_date <- big_ret_date[(V1 > 0)]
+# More volatility lead to more days with large returns
+daily_data %>% 
+  ggplot(aes(x=date, y=V1, color=(date %in% big_ret_date$date))) +
+  geom_point()
+```
+
+```{r}
+# What big returns are closest to each other?
+data_ftse[(!is_day_change) & (!is_unordered_time)
+           & (!is_duplicated) & (!is_off_hours)
+           & (returns >= 0.005) & (date %in% big_ret_date[(V1 > 1)]$date)
+         ][ , length(returns), by=data.table::hour(na.omit(time))] %>% 
+  select(hour = 'data.table', V1) %>% 
+  ggplot(aes(x=hour, y=V1)) +
+  geom_bar(stat='identity')
+```
+
+### Explanation
+- 2000-03-13 at **16:22**: It's going to be deleted. It has two 6% returns. One
+  of them is positive and represents a ~3 minute return; the other happens 1
+  second after and it's a negative return. There's no news on that day. On Yahoo
+  Finance the high of the day is 6568.70 and the close is 6466.90. The 3 minute
+  return gives a price of 6912.80 (which is impossible, if Yahoo Finance's data
+  is correct) and the next return gives a price of 6474, which is near the
+  6466.90 close for the day.
+- Every other big observation, with small exceptions, seems to cluster in
+  periods of high volatility (2001/2002 and 2007/2008) and more towards the
+  beginning of the day, where volatility also tends to be higher. 
+
+
+## Cleaning the data (first pass)
+
+```{r}
+# Confusing? Yes. But does it work? Yes. I could simplify it with `%in%`, but it takes a 
+# lot longer to run.
+data_ftse <- data_ftse[(!is_duplicated) 
+                       & (!is_unordered_time)
+                       & ((!is_off_hours) | ((is_off_hours)
+                                              & ((date == '2000-04-05') 
+                                                  | (date == '2010-03-29')
+                                                  | (date == '2010-03-30')
+                                                  | (date == '2010-03-31'))))
+                       & ((date != '2000-03-13') & (time != '16:22:45'))]  
+
+```
+
+
+### Comparison to other RV data sets
+
+```{r}
+# (note: this comparison works because these the numbers are represented as strings)
+sum(!(data_paper == data_paper_alt))  # Both alternative data sets are equal
+```
+
+```{r}
+# Dates in my data, but not in the RV data
+missing_dates_rv <- data_ftse[(!in_rv_dates)]$date %>% unique %>% as.Date
+```
+
+```{r}
+data_ftse[(!in_rv_dates)]$date %>% unique
+```
+
+```{r}
+data_ftse[(!in_rv_dates)] %>% 
+  ggplot(aes(y=returns, x=date)) +
+  geom_point()
+```
+
+```{r}
+# Dates in my data, but not in the vftse data
+data_ftse[(!in_vftse_dates)]  # No dates
+```
+
+```{r}
+# Dates in the RV data, but not in my data
+missing_dates_ftse1 <- data_paper[!(date %in% unique(data_ftse$date))]$date
+print(missing_dates_ftse1)
+print(missing_dates_ftse1 %in% data_uk_holidays)  # Missing days aren't holidays
+print(wday(missing_dates_ftse1))  # Seems pretty random 
+```
+
+```{r}
+# Dates in the vftse data, but not in my data
+missing_dates_ftse2 <- data_vftse[!(date %in% unique(data_ftse$date))]$date
+print(missing_dates_ftse2 %in% data_uk_holidays)  # Most of these are holidays
+print(wday(missing_dates_ftse2))  # Mostly on mondays, as expected because they're holidays
+```
+
+Everything looks pretty typical, but there's one major error with my data source: a 
+lot of the days after 9/11 are missing (from 2001-09-13 to 2001-10-03 there are 14
+days missing). 
+
+
+## Calculated RV with semi-cleaned data
+
+```{r}
+data_ftse[ , is_day_change := ((date - data.table::shift(date)) > 0)]
+data_ftse[ , is_day_change := c(TRUE, is_day_change[2:length(is_day_change)])]
+data_ftse[ , date_time := as.POSIXct(paste(date, time),
+                                     format="%Y-%m-%d %H:%M:%S",
+                                     tz="Europe/London")]
+data_ftse[ , min_k_ceiling := ceiling_date(date_time, "1 min")]
+last_5_min <- data_ftse[ , last(date_time), by=min_k_ceiling]$V1
+data_ftse[ , min_k_stamp := ((date_time %in% last_5_min) | is_day_change)]
+min_k <- data_ftse[(min_k_stamp)]  
+min_k <- min_k[ , c('date_time', 'price')]
+min_k[ , returns := price/data.table::shift(price, 1) - 1]
+```
+
+```{r}
+# Days that are too short
+# See if the typical day has the right number of returns (510 1-minute returns, or 511 prices)
+n_obs <- min_k[ , length(price), by=as.Date(date_time)] 
+n_obs %>% 
+  ggplot(aes(x=as.Date, y=V1)) +
+  geom_line()
+```
+
+```{r}
+n_obs %>% 
+  arrange(V1) %>% 
+  head
+```
+
+I only found information about:
+- 2000-04-05: day with the technical problems
+- 2001-09-12: day after 9/11
+
+Didn't search extensively for all other days. The biggest anomaly is in
+2004-01-23, and there's no information about that. It seems perfectly
+normal to have days that are shorter by about 5-to-15 minutes (though they seem
+to happen mostly before 2005, especially in 2004). I searched more for
+information between 2004-01 and 2004-05 but couldn't find anything. Once again,
+it's a problem that's common, and I don't have a good way of knowing if there's
+anything wrong with them. 
+
+I'll remove remove 60% of the observations, as per the articles that I cited above. 
+That's done so that the RV measure isn't too affected, as the measure takes the
+sum of returns. 
+
+
+## Clean data (second pass)
+
+```{r}
+exc_60_pct <- n_obs[!(V1 <= (511*0.6))]$as.Date 
+data_ftse <- data_ftse[(date %in% exc_60_pct)]
+```
+
+
+## Large returns
+
+```{r}
+min_1_ret <- data_ftse[(min_k_stamp)]
+min_1_ret <- min_1_ret[ , c('date_time', 'price')]
+min_1_ret[ , ret := (price / data.table::shift(price, 1) - 1)]
+min_1_ret <- na.omit(min_1_ret)
+
+big_ret <- min_1_ret[(abs(ret) > 0.005)] 
+big_ret_2 <- min_1_ret[(abs(ret) > 0.01)] 
+big_ret_3 <- min_1_ret[(abs(ret) > 0.02)] 
+rv_1 <- min_1_ret[ , sum(ret^2), by=as.Date(date_time)]
+
+data_paper_c <- data_paper[(date %in% rv_1$as.Date)]
+rv_1_c <- rv_1[(as.Date %in% data_paper_c$date)]
+
+data_paper_c %>% 
+  ggplot(aes(x=date, y=as.numeric(rv), 
+         color=(rv_1_c$as.Date %in% as.Date(big_ret$date_time)))) +
+  geom_point()
+```
+
+```{r}
+data_paper_c %>% ggplot(aes(x=date, y=as.numeric(rv), 
+                    color=(rv_1_c$as.Date %in% as.Date(big_ret_3$date_time)))) +
+  geom_point()
+```
+
+```{r}
+big_ret %>% 
+  arrange(-abs(ret)) %>% 
+  head
+```
+
+```{r}
+min_1_ret[(as.Date(date_time) == as.Date('2008-10-10'))] %>% 
+  ggplot(aes(x=date_time, y=price)) +
+  geom_line()
+```
+
+Again, it seems that most of the big returns are early in the day and they happen on the 
+more volatile days. The only suspicious day is 2008-10-10, but that one was accompanied 
+by news: https://www.telegraph.co.uk/finance/markets/ftse100/3171277/Financial-crisis-Worst-FTSE-falls-in-history.html, so it's completely plausible that it happened, and the chart
+looks realistic.
+
+```{r}
+# RV using only intraday returns
+rv_5 <- min_k[ , sum(na.omit(log(price/data.table::shift(price)))^2), by=as.Date(date_time)]
+
+compare_paper <- data_paper[(date %in% rv_5$as.Date)]
+compare_rv <- rv_5[(as.Date %in% compare_paper$date)]
+
+compare_paper[ , rv := (as.numeric(rv))]
+compare_paper %>% ggplot(aes(x=date, y=rv)) +
+  geom_point(aes(color='rv paper')) +
+  geom_point(data=compare_rv, aes(x=as.Date, y=V1, color='my rv'))
+```
+
+```{r}
+compare_rv[ , diff := V1 - compare_paper$rv]
+print(head(compare_rv[order(-abs(diff))]))
+```
+
+```{r}
+compare_rv %>% 
+  ggplot(aes(x=as.Date, y=diff)) +
+  geom_point()
+```
+
+There are some large differences, especially on '2008-10-10' and '2008-10-13'. I suspect 
+that's it's because the paper applies techniques to remove outliers. Consistent with that,
+most of the big differences in the data are arround 2008, and it's my paper that seems 
+to almost always overestimate volatility.
+
+For the other data (DataStream's FTSE 100 data set), I will just match the days because 
+there were no other errors. 
+
+
+

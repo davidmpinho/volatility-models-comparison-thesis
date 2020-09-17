@@ -1,0 +1,1324 @@
+---
+title: "Plots for the article"
+date: '2020-09-14'
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+author: David Pinho
+---
+
+```{r, setup, include=FALSE}
+# This is the project folder
+knitr::opts_knit$set(root.dir = './../../')
+```
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(ggplot2)
+library(ggthemes)
+library(grid)
+library(ggridges)
+library(hrbrthemes)
+library(firatheme)
+library(firasans)
+library(Hmisc)
+library(latex2exp)
+
+theme_set(hrbrthemes::theme_ipsum_rc(plot_margin = unit(c(1, 1, 1, 1), units='mm'),
+                                     base_size=8))
+```
+
+### Getting all data
+```{r}
+# Importing global variables/scripts
+path_global_variables <- here::here('/R_exec/ftse100/global_variables.R')
+invisible(source(path_global_variables))
+script_names <- list.files(path=path_r_scripts, pattern="*.R$", full.names=TRUE)
+invisible(lapply(script_names, FUN=source))
+
+# Importing some data
+invisible(source(path_import_vars))
+data.table::setDTthreads(threads=5)  # Change this if you are running on another PC
+
+# Getting all the other data
+rv_ind_oos <- realised_measures$rv_5[start_forecast:NROW(realised_measures)]
+rv_cv_oos <- realised_measures$rv_5[(start_forecast+start_comb_forecast_cv):NROW(realised_measures)]
+rv_all_oos <- realised_measures$rv_5[(
+    start_forecast+start_comb_forecast_cv+start_comb_forecast):NROW(realised_measures)]
+rv_2005_2006 <- rv_ind_oos[1:(start_comb_forecast+start_comb_forecast_cv)]
+rv_2007_2010 <- rv_ind_oos[(start_comb_forecast+start_comb_forecast_cv+1):NROW(rv_ind_oos)]
+
+date_int_2005_2006 <- start_forecast:(start_forecast+start_comb_forecast+start_comb_forecast_cv-1)
+date_int_2007_2010 <- start_oos_forecast:NROW(realised_measures$rv_5)
+
+# Getting results
+data_all_forecasts_raw <- join_and_adjust_all_data(path_ind=path_results,
+                                                   path_comb=path_comb_results,
+                                                   sum_to_date_int=start_forecast,
+                                                   regex='csv')
+data_all_forecasts_matrix <- data_all_forecasts_raw %>%
+    dplyr::filter(date_int >= (start_oos_forecast)) %>%
+    dplyr::select(date_int, model_name, vol) %>%
+    tidyr::pivot_wider(names_from=model_name, values_from=vol) %>%
+    dplyr::select(-date_int)
+data_ind_summ <- data_all_forecasts_raw %>%
+    filter(date_int >= (start_forecast),
+           ind_or_comb == 'ind') %>%
+    group_by(model_name) %>%
+    mutate(vol = replace_negative_predictions(predictions = vol)) %>%
+    summarise(mse = mean(.error_squared(data_x=vol,
+                                        data_y=rv_ind_oos)),
+              mse_2005_2006  = mean(.error_squared(data_x=vol[date_int %in% date_int_2005_2006],
+                                                   data_y=rv_2005_2006)),
+              mse_2007_2010  = mean(.error_squared(data_x=vol[date_int %in% date_int_2007_2010],
+                                                   data_y=rv_2007_2010)),
+              qlike = mean(.error_qlike2(data_x=vol,
+                                         data_y=rv_ind_oos)),
+              qlike_2005_2006  = mean(.error_qlike2(data_x=vol[date_int %in% date_int_2005_2006],
+                                                    data_y=rv_2005_2006)),
+              qlike_2007_2010  = mean(.error_qlike2(data_x=vol[date_int %in% date_int_2007_2010],
+                                                    data_y=rv_2007_2010)),
+              family = family[1], avg_vol = mean(vol), sd_vol = sd(vol),  # Bit of a mess
+              vol_proxy = vol_proxy[1], arima_ar = arima_ar[1], arima_ma = arima_ma[1],
+              arima_d = arima_d[1], method = method[1], garch_model = garch_model[1],
+              garch_sub_model = garch_sub_model[1], garch_lag_p = garch_lag_p[1],
+              lag_q = lag_q[1], expsmooth_beta = expsmooth_beta[1],
+              rollavg_window = rollavg_window[1], c = c[1], j = j[1], q = q[1],
+              s = s[1], rv = rv[1], rv_log = rv_log[1])
+har_rv_bench <- data_ind_summ %>% filter((model_name == 'har-NA-NA-NA-c(1, 5, 22)-NA-FALSE'))
+data_ind_summ <- data_ind_summ %>%
+    mutate(mse = mse / har_rv_bench$mse,
+           mse_2005_2006 = mse_2005_2006 / har_rv_bench$mse_2005_2006,
+           mse_2007_2010 = mse_2007_2010 / har_rv_bench$mse_2007_2010,
+           qlike = qlike / har_rv_bench$qlike,
+           qlike_2005_2006 = qlike_2005_2006 / har_rv_bench$qlike_2005_2006,
+           qlike_2007_2010 = qlike_2007_2010 / har_rv_bench$qlike_2007_2010)
+best_ind_bench <- list(best_mse = data_ind_summ %>% filter(mse == min(mse)),
+                       best_mse_2005_2006 = data_ind_summ %>% filter(mse_2005_2006 == min(mse_2005_2006)),
+                       best_mse_2007_2010 = data_ind_summ %>% filter(mse_2007_2010 == min(mse_2007_2010)),
+                       best_qlike = data_ind_summ %>% filter(qlike == min(qlike)),
+                       best_qlike_2005_2006 = data_ind_summ %>% filter(qlike_2005_2006 == min(qlike_2005_2006)),
+                       best_qlike_2007_2010 = data_ind_summ %>% filter(qlike_2007_2010 == min(qlike_2007_2010)))
+best_ind_bench <- list(best_mse = data_ind_summ %>% filter(mse == min(mse)),
+                       best_mse_2005_2006 = data_ind_summ %>% filter(mse_2005_2006 == min(mse_2005_2006)),
+                       best_mse_2007_2010 = data_ind_summ %>% filter(mse_2007_2010 == min(mse_2007_2010)),
+                       best_qlike = data_ind_summ %>% filter(qlike == min(qlike)),
+                       best_qlike_2005_2006 = data_ind_summ %>% filter(qlike_2005_2006 == min(qlike_2005_2006)),
+                       best_qlike_2007_2010 = data_ind_summ %>% filter(qlike_2007_2010 == min(qlike_2007_2010)))
+
+
+data_comb_summ <- data_all_forecasts_raw %>%
+    filter(date_int >= start_oos_forecast,
+           ind_or_comb == 'comb') %>%
+    group_by(model_name) %>%
+    mutate(vol = replace_negative_predictions(predictions = vol)) %>%
+    summarise(mse = mean(.error_squared(data_x=vol,
+                                        data_y=rv_all_oos)),
+              mse = mse / har_rv_bench$mse_2007_2010,
+              qlike = mean(.error_qlike2(data_x=vol,
+                                         data_y=rv_all_oos)),
+              qlike = qlike / har_rv_bench$qlike_2007_2010,
+              family = family[1], avg_vol = mean(vol), sd_vol = sd(vol),  # Bit of a mess
+              vol_proxy = vol_proxy[1], alpha = alpha[1], lambda = lambda[1],
+              trim_k = trim_k[1], loss_function = loss_function[1],
+              group_n_models = group_n_models[1], group_models = group_models[1])
+
+```
+
+### Lists for the helper functions
+
+```{r}
+model_families <- list("arima-rv" = '$\\text{ARMA}^{\\text{RV}}$',
+                       "arima-squared_ret" = '$\\text{ARMA}^{\\text{r}}$',
+                       "garch" = '$\\text{GARCH}$',
+                       "har" = '$\\text{HAR}$',
+                       "naive-rv5" = '$\\text{Naïve}^\\text{RV}$',
+                       "naive-squared_ret" = '$\\text{Naïve}^\\text{r}$',
+                       "naive-iv" = '$\\text{IV}$',
+                       "regularization-mse" = '$\\text{Regularization}^\\text{MSE}$',
+                       "regularization-qlike2" = '$\\text{Regularization}^\\text{QLIKE}$',
+                       "equal_weight" = '$\\text{EqualWeight}$',
+                       "group" = '$\\text{Grouping}$',
+                       "trim-mse" = '$\\text{Trimming}^\\text{MSE}$',
+                       "trim-qlike2" = '$\\text{Trimming}^\\text{QLIKE}$')
+```
+
+### Helper functions
+```{r}
+ptex <- function (x) parse(text=TeX(x))
+average_model_loss <- function (models, loss) {
+    avg_performance <- vector(mode='list', length=NROW(models))
+    models <- str_split(string=models, pattern=' ')
+    for (i in 1:length(models)) {
+        avg_performance[[i]] <- 0
+        for (m in models[[i]]) {
+            avg_performance[[i]] <- avg_performance[[i]] + (data_ind_summ %>%
+                filter(family == m) %>%
+                summarise(mean_loss = mean(eval(parse(text=loss)))) %>%
+                as.numeric()) / NROW(models[[i]])
+        }
+    }
+    return(unlist(avg_performance))
+}
+
+best_model_loss <- function (models, loss) {
+    min_performance <- vector(mode='list', length=NROW(models))
+    models <- str_split(string=models, pattern=' ')
+    for (i in 1:length(models)) {
+        min_performance[[i]] <- data_ind_summ %>%
+            filter(family %in% models[[i]]) %>%
+            summarise(min_loss = min(eval(parse(text=loss)))) %>%
+            as.numeric()
+    }
+    return(unlist(min_performance))
+}
+
+model_m_in_vector <- function (vector, m) {
+    return(m %in% vector)
+}
+
+count_zero_weight_models_per_day <- function (weights, exclude_first_n_rows) {
+    weights <- weights[(exclude_first_n_rows+1):NROW(weights), ]
+    return(mean(rowSums(((weights == 0)*1))))
+}
+
+model_name_to_tex <- function (row_dataframe) {
+    model_name_to_tex <- switch(
+        EXPR = row_dataframe[['family']],
+        "arima-rv" = arma_tex(row_dataframe),
+        "arima-squared_ret" = arma_tex(row_dataframe),
+        "garch" = garch_tex(row_dataframe),
+        "har" = har_tex(row_dataframe),
+        "naive-rv5" = naive_tex(row_dataframe),
+        "naive-squared_ret" = naive_tex(row_dataframe),
+        "naive-iv" = naive_tex(row_dataframe),
+        "regularization-mse" = regularization_tex(row_dataframe),
+        "regularization-qlike2" = regularization_tex(row_dataframe),
+        "equal_weight" = '\\text{EqualWeight}',
+        "group" = grouping_tex(row_dataframe),
+        "trim-mse" = trimming_tex(row_dataframe),
+        "trim-qlike2" = trimming_tex(row_dataframe))
+    return(model_name_to_tex)
+}
+arma_tex <- function (row_dataframe) {
+    if (row_dataframe[['vol_proxy']] %in% c('rv', 'rv5')) {
+        name_tex <- paste0("$\\texttt{ARMA}^\\text{RV}(",
+                           row_dataframe[['arima_ar']], ",",
+                           row_dataframe[['arima_ma']], ")$")
+    } else if (row_dataframe[['vol_proxy']] == 'squared_ret') {
+        name_tex <- paste0("$\\texttt{ARMA}^\\text{r}(",
+                           row_dataframe[['arima_ar']], ",",
+                           row_dataframe[['arima_ma']], ")$")
+    } else {
+        name_tex <- paste('$\\texttt{IV}$')
+    }
+    return(name_tex)
+}
+garch_tex <- function (row_dataframe) {
+    if (is.na(row_dataframe[['garch_sub_model']])) {
+        name_tex <- switch(
+            EXPR=row_dataframe[['garch_model']],
+            'eGARCH' = '$\\texttt{E-GARCH(1,1)}$',
+            'csGARCH' = '$\\texttt{C-GARCH(1,1)}$',
+            'iGARCH' = '$\\texttt{I-GARCH(1,1)}$',
+            'realGARCH' = ifelse(test=row_dataframe[['vol_proxy']] == 'rv',
+                                 yes='$\\texttt{R-GARCH}^{\\text{RV}}(1,1)$',
+                                 no='$\\texttt{R-GARCH}^{\\text{r}}(1,1)$'),
+            'sGARCH' = '$\\texttt{ARCH(1)}$')
+    } else {
+        name_tex <- switch(
+            EXPR=row_dataframe[['garch_sub_model']],
+            'ALLGARCH' = '$\\texttt{F-GARCH(1,1)}$',
+            'APARCH' = '$\\texttt{AP-ARCH(1,1)}$',
+            'AVGARCH' = '$\\texttt{AV-GARCH(1,1)}$',
+            'GARCH' = '$\\texttt{GARCH(1,1)}$',
+            'GJRGARCH' = '$\\texttt{GJR-GARCH(1,1)}$',
+            'NAGARCH' = '$\\texttt{NA-GARCH(1,1)}$',
+            'NGARCH' = '$\\texttt{N-ARCH(1,1)}$',
+            'TGARCH' = '$\\texttt{T-GARCH(1,1)}$')
+    }
+    return(name_tex)
+}
+har_tex <- function (row_dataframe) {
+    name_tex <- paste0('$\\texttt{',
+                       ifelse(!is.na(row_dataframe[['q']]), 'Q', ''),
+                       ifelse(!is.na(row_dataframe[['s']]), 'S-', ''),
+                       ifelse(!is.na(row_dataframe[['q']]) & is.na(row_dataframe[['s']]),
+                              '-', ''),
+                       'HAR-',
+                       ifelse(is.na(row_dataframe[['rv']]), yes='C',
+                              no=ifelse(test=row_dataframe[['rv_log']],
+                                        yes='RVlog', no='RV')),
+                       ifelse(!is.na(row_dataframe[['j']]), '-J', ''),
+                       '}$')
+    return(name_tex)
+}
+naive_tex <- function (row_dataframe) {
+    model_class <- str_split(string=row_dataframe[['model_name']],
+                             pattern='_')[[1]][1]
+    name_tex <- switch(
+        EXPR=model_class,
+        'random' = paste0('$\\texttt{RandWalk}^\\text{',
+                          ifelse(row_dataframe[['vol_proxy']] == 'rv5',
+                                 yes='RV', no='r'),
+                          '}$'),
+        'roll' =  paste0('$\\texttt{RollAvg}^\\text{',
+                         ifelse(row_dataframe[['vol_proxy']] == 'rv5',
+                                yes='RV', no='r'),
+                         '}(', row_dataframe[['rollavg_window']], ')$'),
+        'exp' = paste0('$\\texttt{ES}^\\text{',
+                       ifelse(row_dataframe[['vol_proxy']] == 'rv5',
+                              yes='RV', no='r'),
+                       '}(', (1-row_dataframe[['expsmooth_beta']]), ')$')
+    )
+    if ((model_class == 'roll') & (row_dataframe[['rollavg_window']] == 2734)) {
+        name_tex <- paste0('$\\texttt{HistVol}^\\text{',
+                         ifelse(row_dataframe[['vol_proxy']] == 'rv5',
+                                yes='RV', no='r'), '}$')
+    }
+    return(name_tex)
+}
+regularization_tex <- function (row_dataframe) {
+    model_class <- str_split(string=row_dataframe[['model_name']],
+                             pattern='-')[[1]][1]
+    loss_name <- str_split(string=row_dataframe[['model_name']],
+                           pattern='-')[[1]][2]
+    name_tex <- switch(
+        EXPR=model_class,
+        'ridge' = paste0('$\\texttt{Ridge}^{\\text{',
+                         ifelse(loss_name == 'mse',
+                                yes='\\text{MSE}',
+                                no='\\text{QLIKE}'),
+                         '}}$'),
+        'lasso' = paste0('$\\texttt{Lasso}^{\\text{',
+                         ifelse(loss_name == 'mse',
+                              yes='\\text{MSE}',
+                              no='\\text{QLIKE}'),
+                         '}}$'),
+        'enet' = paste0('$\\texttt{ElasticNet}^{\\text{',
+                         ifelse(loss_name == 'mse',
+                              yes='\\text{MSE}',
+                              no='\\text{QLIKE}'),
+                        '}}$'))
+    return(name_tex)
+}
+trimming_tex <- function (row_dataframe) {
+    name_tex <- paste0('$\\texttt{Trimming}^{\\text{',
+                       ifelse(row_dataframe[['loss_function']] == 'mse',
+                              yes='\\text{MSE}',
+                              no='\\text{QLIKE}'), '}}',
+                       '(', row_dataframe[['trim_k']], ')$')
+    return(name_tex)
+}
+grouping_tex <- function (row_dataframe) {
+    group_models <- str_split(string=row_dataframe[['group_models']],
+                              pattern=' ')[[1]]
+    for (i in 1:NROW(group_models)) {
+        group_models[i] <- model_families[[(group_models[i])]]
+    }
+    name_tex <- paste0('\\texttt{Group}({', paste0(group_models, collapse=', '), '})')
+    return(name_tex)
+}
+model_family_to_tex <- function (family) {
+    # This is intended to be used with apply() functions.
+    return(model_families[[family]])
+}
+```
+
+### Adding TeX names
+```{r}
+data_ind_summ <- data_ind_summ %>%
+    mutate(family_tex =  sapply(X=family, FUN=model_family_to_tex,
+                               USE.NAMES=FALSE))
+data_comb_summ <- data_comb_summ %>%
+    mutate(family_tex =  sapply(X=family, FUN=model_family_to_tex,
+                                USE.NAMES=FALSE))
+
+for (row in 1:NROW(data_ind_summ)) {
+    # With the sapply function it was outputting a matrix, so I use this loop.
+    data_ind_summ[row, 'model_name_tex'] <- model_name_to_tex(data_ind_summ[row, , drop=FALSE])
+}
+for (row in 1:NROW(data_comb_summ)) {
+    data_comb_summ[row, 'model_name_tex'] <- model_name_to_tex(data_comb_summ[row, , drop=FALSE])
+}
+```
+
+# Graphs
+## Individual models
+### Naive individual models and implied volatility
+```{r}
+data <- data_ind_summ %>%
+    filter(family %in% c('naive-iv', 'naive-rv5', 'naive-squared_ret'))
+n_names_y <- length(unique(data$model_name))
+```
+
+```{r}
+data %>%
+    ggplot(aes(mse_2007_2010, reorder(model_name, mse_2007_2010))) +
+    geom_point() +
+    geom_vline(aes(xintercept=1), linetype='dashed') +
+    geom_vline(aes(xintercept=best_ind_bench$best_mse_2007_2010$mse_2007_2010),
+               linetype='dashed') +
+    scale_y_discrete(labels=ptex(c(
+        'ExpSmooth^{RV}(0.8)',
+        'ExpSmooth^{RV}(0.7)',
+        'ExpSmooth^{RV}(0.6)',
+        'RollAvg^{RV}(5)',
+        'ExpSmooth^{RV}(0.9)',
+        'ExpSmooth^{RV}(0.5)',
+        'IV',
+        'ExpSmooth^{r}(0.9)',
+        'ExpSmooth^{RV}(0.4)',
+        'ExpSmooth^{RV}(0.95)',
+        'ExpSmooth^{r}(0.95)',
+        'RollAvg^{RV}(21)',
+        'ExpSmooth^{r}(0.8)',
+        'RollAvg^{r}(21)',
+        'ExpSmooth^{RV}(0.3)',
+        'ExpSmooth^{r}(0.7)',
+        'RollAvg^{r}(5)',
+        'ExpSmooth^{RV}(0.2)',
+        'RandWalk^{RV}',
+        'ExpSmooth^{r}(0.05)',
+        'ExpSmooth^{r}(0.1)',
+        'ExpSmooth^{r}(0.2)',
+        'ExpSmooth^{r}(0.3)',
+        'ExpSmooth^{r}(0.4)',
+        'ExpSmooth^{r}(0.5)',
+        'RollAvg^{RV}(1008)',
+        'RollAvg^{r}(504)',
+        'RollAvg^{r}(1008)',
+        'RollAvg^{RV}(504)',
+        'HistVol^{RV}',
+        'RollAvg^{RV}(63)',
+        'RollAvg^{r}(63)',
+        'RollAvg^{RV}(126)',
+        'ExpSmooth^{RV}(0.1)',
+        'ExpSmooth^{r}(0.6)',
+        'RollAvg^{r}(126)',
+        'ExpSmooth^{RV}(0.05)',
+        'RollAvg^{RV}(252)',
+        'RollAvg^{r}(252)',
+        'HistVol^{r}',
+        'RandWalk^{r}'
+    ))) +
+    xlim(c(0.8, 3)) +
+    labs(y='Model', x='MSE relative to HAR-RV') +
+    theme(legend.position = 'bottom')
+#ggsave(filename=paste('[analysis]ind', 'naive', 'mse_2007_2010.png', sep='_'),
+       #path='./article/images/', dpi=300, plot=last_plot(), units='mm', width=145,
+       #height=(4.5 * (n_names_y+3)))
+
+data %>%
+    ggplot(aes(qlike_2007_2010, reorder(model_name, qlike_2007_2010))) +
+    geom_point() +
+    geom_vline(aes(xintercept=1), linetype='dashed') +
+    geom_vline(aes(xintercept=best_ind_bench$best_qlike_2007_2010$qlike_2007_2010),
+               linetype='dashed') +
+    scale_y_discrete(labels=ptex(c(
+        'ExpSmooth^{RV}(0.6)',
+        'ExpSmooth^{RV}(0.7)',
+        'ExpSmooth^{RV}(0.5)',
+        'ExpSmooth^{RV}(0.4)',
+        'ExpSmooth^{RV}(0.8)',
+        'RollAvg^{RV}(5)',
+        'ExpSmooth^{RV}(0.3)',
+        'ExpSmooth^{RV}(0.2)',
+        'ExpSmooth^{RV}(0.1)',
+        'ExpSmooth^{RV}(0.9)',
+        'ExpSmooth^{RV}(0.05)',
+        'ExpSmooth^{r}(0.9)',
+        'RandWalk^{RV}',
+        'ExpSmooth^{r}(0.8)',
+        'ExpSmooth^{r}(0.95)',
+        'ExpSmooth^{RV}(0.95)',
+        'RollAvg^{RV}(21)',
+        'RollAvg^{r}(21)',
+        'IV',
+        'ExpSmooth^{r}(0.7)',
+        'RollAvg^{r}(63)',
+        'RollAvg^{RV}(63)',
+        'RollAvg^{r}(126)',
+        'RollAvg^{RV}(126)',
+        'ExpSmooth^{r}(0.6)',
+        'RollAvg^{r}(5)',
+        'RollAvg^{r}(252)',
+        'RollAvg^{RV}(252)',
+        'ExpSmooth^{r}(0.5)',
+        'RollAvg^{r}(504)',
+        'HistVol^{r}',
+        'RollAvg^{RV}(504)',
+        'HistVol^{RV}',
+        'RollAvg^{r}(1008)',
+        'ExpSmooth^{r}(0.4)',
+        'RollAvg^{RV}(1008)',
+        'ExpSmooth^{r}(0.3)',
+        'ExpSmooth^{r}(0.2)',
+        'ExpSmooth^{r}(0.1)',
+        'ExpSmooth^{r}(0.05)',
+        'RandWalk^{r}'
+    ))) +
+    xlim(c(0.8, 3)) +
+    labs(y='Model', x='QLIKE relative to HAR-RV') +
+    theme(legend.position = 'bottom')
+#ggsave(filename=paste('[analysis]ind', 'naive', 'qlike_2007_2010.png', sep='_'),
+       #path='./article/images/', dpi=300, plot=last_plot(), units='mm', width=145,
+       #height=(4.5 * (n_names_y+3)))
+```
+
+### HAR
+```{r}
+data <- data_ind_summ %>%
+    filter(family %in% c('har', 'arima-rv'))
+n_names_y <- length(unique(data$model_name))
+```
+
+```{r}
+data %>%
+    ggplot(aes(mse_2007_2010, reorder(model_name, mse_2007_2010))) +
+    geom_point() +
+    scale_y_discrete(labels=ptex(c('HAR-RVlog',
+                                   'ARMA^{RV}(1,1)',
+                                   'HAR-C-J',
+                                   'S-HAR-C-J',
+                                   'QS-HAR-RV',
+                                   'QS-HAR-C-J',
+                                   'Q-HAR-C-J',
+                                   'HAR-RV',
+                                   'QS-HAR-C',
+                                   'Q-HAR-RV',
+                                   'HAR-C',
+                                   'S-HAR-RV',
+                                   'Q-HAR-C',
+                                   'ARMA^{RV}(0,1)',
+                                   'S-HAR-C',
+                                   'ARMA^{RV}(1,0)'
+    ))) +
+    geom_vline(aes(xintercept=1), linetype='dashed') +
+    geom_vline(aes(xintercept=best_ind_bench$best_mse_2007_2010$mse_2007_2010),
+               linetype='dashed') +
+    xlim(c(0.80, 1.25)) +
+    labs(y='Model', x='MSE relative to HAR-RV')
+#ggsave(filename=paste('[analysis]ind', 'har', 'mse_2007_2010.png', sep='_'),
+       #path='./article/images/', dpi=300, plot=last_plot(), units='mm', width=145,
+       #height=(4.7 * (n_names_y+3)))
+data %>%
+    ggplot(aes(qlike_2007_2010, reorder(model_name, qlike_2007_2010))) +
+    geom_point() +
+    scale_y_discrete(labels=ptex(c('HAR-C-J',
+                                   'Q-HAR-C-J',
+                                   'QS-HAR-C-J',
+                                   'QS-HAR-RV',
+                                   'S-HAR-C-J',
+                                   'Q-HAR-RV',
+                                   'HAR-RVlog',
+                                   'S-HAR-RV',
+                                   'QS-HAR-C',
+                                   'ARMA^{RV}(1,1)',
+                                   'HAR-RV',
+                                   'S-HAR-C',
+                                   'Q-HAR-C',
+                                   'HAR-C',
+                                   'ARMA^{RV}(1,0)',
+                                   'ARMA^{RV}(0,1)'
+    ))) +
+    geom_vline(aes(xintercept=1), linetype='dashed') +
+    geom_vline(aes(xintercept=best_ind_bench$best_qlike_2007_2010$qlike_2007_2010),
+               linetype='dashed') +
+    xlim(c(0.80, 1.25)) +
+    labs(y='Model', x='QLIKE relative to HAR-RV')
+#ggsave(filename=paste('[analysis]ind', 'har', 'qlike_2007_2010.png', sep='_'),
+       #path='./article/images/', dpi=300, plot=last_plot(), units='mm', width=145,
+       #height=(4.7 * (n_names_y+3)))
+
+```
+
+### GARCH
+```{r}
+n_names_y <- length(unique(data$model_name))
+data <- data_ind_summ %>%
+    filter(family %in% c('garch', 'arima-squared_ret'))
+```
+
+```{r}
+data %>%
+    ggplot(aes(mse_2005_2006, reorder(model_name, mse_2007_2010))) +
+    geom_point() +
+    scale_y_discrete(labels=ptex(c(
+        'E-GARCH(1,1)',
+        'AV-GARCH(1,1)',
+        'NA-ARCH(1,1)',
+        'AP-ARCH(1,1)',
+        'F-GARCH(1,1)',
+        'T-GARCH(1,1)',
+        'GJR-GARCH(1,1)',
+        'R-GARCH^{RV}(1,1)',
+        'C-GARCH(1,1)',
+        'N-ARCH(1,1)',
+        'R-GARCH^{r}(1,1)',
+        'ARMA^{r}(1,1)',
+        'GARCH(1,1)',
+        'I-GARCH(1,1)',
+        'ARMA^{r}(1,0)',
+        'ARMA^{r}(0,1)',
+        'ARCH(1)'
+    ))) +
+    geom_vline(aes(xintercept=1), linetype='dashed') +
+    geom_vline(aes(xintercept=best_ind_bench$best_mse_2005_2006$mse_2005_2006),
+               linetype='dashed') +
+    xlim(c(0.80, 1.5)) +
+    labs(y='Model', x='MSE relative to HAR-RV')
+#ggsave(filename=paste('[analysis]ind', 'garch', 'mse_2005_2006.png', sep='_'),
+       #path='./article/images/', dpi=300, plot=last_plot(), units='mm', width=145,
+       #height=(4.7 * (n_names_y+3)))
+
+data %>%
+    ggplot(aes(qlike_2005_2006, reorder(model_name, mse_2007_2010))) +
+    geom_point() +
+    scale_y_discrete(labels=ptex(c(
+        'E-GARCH(1,1)',
+        'AV-GARCH(1,1)',
+        'NA-ARCH(1,1)',
+        'AP-ARCH(1,1)',
+        'F-GARCH(1,1)',
+        'T-GARCH(1,1)',
+        'GJR-GARCH(1,1)',
+        'R-GARCH^{RV}(1,1)',
+        'C-GARCH(1,1)',
+        'N-ARCH(1,1)',
+        'R-GARCH^{r}(1,1)',
+        'ARMA^{r}(1,1)',
+        'GARCH(1,1)',
+        'I-GARCH(1,1)',
+        'ARMA^{r}(1,0)',
+        'ARMA^{r}(0,1)',
+        'ARCH(1)'
+    ))) +
+    geom_vline(aes(xintercept=1), linetype='dashed') +
+    geom_vline(aes(xintercept=best_ind_bench$best_qlike_2005_2006$qlike_2005_2006),
+               linetype='dashed') +
+    xlim(c(0.80, 1.50)) +
+    labs(y='Model', x='QLIKE relative to HAR-RV')
+#ggsave(filename=paste('[analysis]ind', 'garch', 'qlike_2005_2006.png', sep='_'),
+       #path='./article/images/', dpi=300, plot=last_plot(), units='mm', width=145,
+       #height=(4.7 * (n_names_y+3)))
+```
+
+```{r}
+data %>%
+    ggplot(aes(mse_2007_2010, reorder(model_name, mse_2007_2010))) +
+    geom_point() +
+    scale_y_discrete(labels=ptex(c(
+        'E-GARCH(1,1)',
+        'AV-GARCH(1,1)',
+        'NA-ARCH(1,1)',
+        'AP-ARCH(1,1)',
+        'F-GARCH(1,1)',
+        'T-GARCH(1,1)',
+        'GJR-GARCH(1,1)',
+        'R-GARCH^{RV}(1,1)',
+        'C-GARCH(1,1)',
+        'N-ARCH(1,1)',
+        'R-GARCH^{r}(1,1)',
+        'ARMA^{r}(1,1)',
+        'GARCH(1,1)',
+        'I-GARCH(1,1)',
+        'ARMA^{r}(1,0)',
+        'ARMA^{r}(0,1)',
+        'ARCH(1)'
+    ))) +
+    geom_vline(aes(xintercept=1), linetype='dashed') +
+    geom_vline(aes(xintercept=best_ind_bench$best_mse_2007_2010$mse_2007_2010),
+               linetype='dashed') +
+    xlim(c(0.80, 1.5)) +
+    labs(y='Model', x='MSE relative to HAR-RV')
+#ggsave(filename=paste('[analysis]ind', 'garch', 'mse_2007_2010.png', sep='_'),
+       #path='./article/images/', dpi=300, plot=last_plot(), units='mm', width=145,
+       #height=(4.7 * (n_names_y+3)))
+
+data %>%
+    ggplot(aes(qlike_2007_2010, reorder(model_name, mse_2007_2010))) +
+    geom_point() +
+    scale_y_discrete(labels=ptex(c(
+        'E-GARCH(1,1)',
+        'AV-GARCH(1,1)',
+        'NA-ARCH(1,1)',
+        'AP-ARCH(1,1)',
+        'F-GARCH(1,1)',
+        'T-GARCH(1,1)',
+        'GJR-GARCH(1,1)',
+        'R-GARCH^{RV}(1,1)',
+        'C-GARCH(1,1)',
+        'N-ARCH(1,1)',
+        'R-GARCH^{r}(1,1)',
+        'ARMA^{r}(1,1)',
+        'GARCH(1,1)',
+        'I-GARCH(1,1)',
+        'ARMA^{r}(1,0)',
+        'ARMA^{r}(0,1)',
+        'ARCH(1)'
+    ))) +
+    geom_vline(aes(xintercept=1), linetype='dashed') +
+    geom_vline(aes(xintercept=best_ind_bench$best_qlike_2007_2010$qlike_2007_2010),
+               linetype='dashed') +
+    xlim(c(0.80, 1.50)) +
+    labs(y='Model', x='QLIKE relative to HAR-RV')
+#ggsave(filename=paste('[analysis]ind', 'garch', 'qlike_2007_2010.png', sep='_'),
+       #path='./article/images/', dpi=300, plot=last_plot(), units='mm', width=145,
+       #height=(4.7 * (n_names_y+3)))
+```
+
+### Comparison between some forecasts
+```{r}
+data_plot_pred <- data_all_forecasts_raw %>%
+    filter((model_name == 'csGARCH-NA-1-1-0-0-FALSE-FALSE-norm')
+           | (model_name == 'fGARCH-GARCH-1-1-0-0-FALSE-FALSE-norm')
+           | (model_name == 'har-NA-NA-NA-c(1, 5, 22)-NA-FALSE'),
+           date_int >= start_oos_forecast) %>%
+    group_by(model_name) %>%
+    mutate(rv = rv_2007_2010,
+           date = realised_measures$date[date_int_2007_2010]) %>%
+    ungroup()
+data_plot_pred %>%
+    filter(date_int >= 1850, date_int <= 1950) %>%
+    ggplot(aes(date, sqrt(vol*252), color = model_name)) +
+    geom_line() +
+    geom_line(aes(date, sqrt(rv*252), color='Realised Volatility')) +
+    scale_color_manual(values=c('#F8766D', '#00BA38', '#619CFF', 'black'),
+                       labels=c('C-GARCH(1,1)', 'GARCH(1,1)', 'HAR-RV',
+                                'Realised Volatility')) +
+    theme(legend.position = 'bottom') +
+    labs(y=TeX('\\sqrt{Vol * 252}'), x='Date', color='')
+#ggsave(filename=paste('[analysis]ind', 'garch', 'demonstration.png', sep='_'),
+       #path='./article/images/', dpi=300, plot=last_plot(), units='mm', width=145,
+       #height=70)
+```
+
+## Model combinations
+### Grouping
+```{r}
+average_mse_2007_2010 <- data_ind_summ %>%
+    summarise(mean(mse_2007_2010)) %>%
+    as.numeric
+average_qlike_2007_2010 <- data_ind_summ %>%
+    summarise(mean(qlike_2007_2010)) %>%
+    as.numeric
+min_mse_2007_2010 <- data_ind_summ %>%
+    summarise(min(mse_2007_2010)) %>%
+    as.numeric
+min_qlike_2007_2010 <- data_ind_summ %>%
+    summarise(min(qlike_2007_2010)) %>%
+    as.numeric
+
+data <- data_comb_summ %>%
+    filter(family %in% c('group', 'equal_weight')) %>%
+    mutate(average_mse = ifelse(
+        test = (family == 'group'),
+        yes = average_model_loss(models=group_models, loss='mse_2007_2010'),
+        no = average_mse_2007_2010),
+           average_qlike = ifelse(
+        test = (family == 'group'),
+        yes = average_model_loss(models=group_models, loss='qlike_2007_2010'),
+        no = average_qlike_2007_2010),
+           best_mse = ifelse(
+        test = (family == 'group'),
+        yes = best_model_loss(models=group_models, loss='mse_2007_2010'),
+        no = min_mse_2007_2010),
+           best_qlike = ifelse(
+        test = (family == 'group'),
+        yes = best_model_loss(models=group_models, loss='qlike_2007_2010'),
+        no = min_qlike_2007_2010),
+           group_models = ifelse(
+        test = (family == 'group'),
+        yes = group_models,
+        no = 'equal_weight'),
+           group_n_models = ifelse(
+        test = (family == 'group'),
+        yes = group_n_models,
+        no = 74)
+    )
+n_names_y <- length(unique(filter(data, group_n_models %in% c(1, 74))$model_name))
+```
+
+```{r}
+data %>%
+    filter(group_n_models %in% c(1, 74)) %>%
+    select(best_mse, average_mse, mse, group_models) %>%
+    mutate(order_var=mse) %>%
+    pivot_longer(best_mse:mse) %>%
+    ggplot(aes(value, reorder(group_models, order_var), shape=name, color=name)) +
+    geom_point() +
+    scale_shape_manual(name='', labels = c('Average MSE in group',
+                                           'Best model in group',
+                                           'MSE of combination of the group'),
+                       values=c(22, 4, 23)) +
+    scale_color_manual(name='', labels = c('Average MSE in group',
+                                           'Best model in group',
+                                           'MSE of combination of the group'),
+                       values=c('blue', 'black', 'red')) +
+    geom_vline(aes(xintercept=1), linetype='dashed') +
+    geom_vline(aes(xintercept=best_ind_bench$best_mse_2007_2010$mse_2007_2010),
+               linetype='dashed') +
+    xlim(c(0.80, 1.7)) +
+    scale_y_discrete(labels=ptex(c(
+        'GARCH',
+        'EqualWeight',
+        'Naïve^{RV}',
+        'HAR',
+        'IV',
+        'ARMA^{RV}',
+        'ARMA^{r}',
+        'Naïve^{r}'
+    ))) +
+    theme(legend.position = 'bottom') +
+    labs(y='Model group', x='MSE relative to HAR-RV')
+#ggsave(filename=paste('[analysis]comb', 'group1', 'mse_2007_2010.png', sep='_'),
+       #path='./article/images/', dpi=300, plot=last_plot(), units='mm', width=145,
+       #height=(4.7 * (n_names_y+3)))
+
+data %>%
+    filter(group_n_models %in% c(1, 74)) %>%
+    select(best_qlike, average_qlike, qlike, group_models) %>%
+    mutate(order_var=qlike) %>%
+    pivot_longer(best_qlike:qlike) %>%
+    ggplot(aes(value, reorder(group_models, order_var), shape=name, color=name)) +
+    geom_point() +
+    scale_shape_manual(name='', labels = c('Average QLIKE in group',
+                                           'Best model in group',
+                                           'QLIKE of combination of the group'),
+                       values=c(22, 4, 23)) +
+    scale_color_manual(name='', labels = c('Average QLIKE in group',
+                                           'Best model in group',
+                                           'QLIKE of combination of the group'),
+                       values=c('blue', 'black', 'red')) +
+    geom_vline(aes(xintercept=1), linetype='dashed') +
+    geom_vline(aes(xintercept=best_ind_bench$best_qlike_2007_2010$qlike_2007_2010),
+               linetype='dashed') +
+    xlim(c(0.80, 1.7)) +
+    scale_y_discrete(labels=ptex(c(
+        'HAR',
+        'GARCH',
+        'EqualWeight',
+        'Naïve^{RV}',
+        'ARMA^{RV}',
+        'Naïve^{r}',
+        'IV',
+        'ARMA^{r}'
+    ))) +
+    theme(legend.position = 'bottom') +
+    labs(y='Model group', x='QLIKE relative to HAR-RV')
+#ggsave(filename=paste('[analysis]comb', 'group1', 'qlike_2007_2010.png', sep='_'),
+       #path='./article/images/', dpi=300, plot=last_plot(), units='mm', width=145,
+       #height=(4.7 * (n_names_y+3)))
+```
+
+```{r}
+n_names_y <- length(unique(data$group_n_models)) - 1
+data %>%
+    filter(group_n_models != 74) %>%
+    ggplot(aes(mse, reorder(group_n_models, group_n_models))) +
+    geom_point(alpha=0.25) +
+    geom_vline(aes(xintercept=1), linetype='dashed') +
+    geom_vline(aes(xintercept=best_ind_bench$best_mse_2007_2010$mse_2007_2010),
+               linetype='dashed') +
+    xlim(c(0.80, 1.5)) +
+    labs(y='Number of model categories used', x='MSE relative to HAR-RV')
+#ggsave(filename=paste('[analysis]comb', 'groupn', 'mse_2007_2010.png', sep='_'),
+       #path='./article/images/', dpi=300, plot=last_plot(), units='mm', width=145,
+       #height=(4.7 * (n_names_y+3)))
+
+data %>%
+    filter(group_n_models != 74) %>%
+    ggplot(aes(qlike, reorder(group_n_models, group_n_models))) +
+    geom_point(alpha=0.25) +
+    geom_vline(aes(xintercept=1), linetype='dashed') +
+    geom_vline(aes(xintercept=best_ind_bench$best_qlike_2007_2010$qlike_2007_2010),
+               linetype='dashed') +
+    xlim(c(0.80, 1.5)) +
+    labs(y='Number of model categories used', x='QLIKE relative to HAR-RV')
+#ggsave(filename=paste('[analysis]comb', 'groupn', 'qlike_2007_2010.png', sep='_'),
+       #path='./article/images/', dpi=300, plot=last_plot(), units='mm', width=145,
+       #height=(4.7 * (n_names_y+3)))
+
+```
+
+```{r}
+data_plot <- data %>%
+    filter((str_detect(string=str_split(group_models, pattern=' '), pattern = 'har')
+           | str_detect(string=str_split(group_models, pattern=' '), pattern = 'garch')
+           | str_detect(string=str_split(group_models, pattern=' '), pattern = 'naive-iv')
+           | str_detect(string=str_split(group_models, pattern=' '), pattern = 'equal_weight')
+           ),
+           str_detect(string=str_split(group_models, pattern=' '), pattern = 'naive-rv', negate=TRUE),
+           str_detect(string=str_split(group_models, pattern=' '), pattern = 'naive-squared_ret', negate=TRUE),
+           str_detect(string=str_split(group_models, pattern=' '), pattern = 'arima-rv', negate=TRUE),
+           str_detect(string=str_split(group_models, pattern=' '), pattern = 'arima-squared_ret', negate=TRUE)
+)
+n_names_y <- length(unique(data_plot$group_models))
+data_plot %>%
+    ggplot(aes(mse, reorder(group_models, mse))) +
+    geom_point() +
+    scale_y_discrete(labels=ptex(c(
+        'Grouping(GARCH)',
+        'Grouping(GARCH, HAR)',
+        'Grouping(GARCH, HAR, IV)',
+        'Grouping(GARCH, IV)',
+        'EqualWeight',
+        'Grouping(HAR, IV)',
+        'Grouping(HAR)',
+        'Grouping(IV)'
+    ))) +
+    geom_vline(aes(xintercept=1), linetype='dashed') +
+    geom_vline(aes(xintercept=best_ind_bench$best_mse_2007_2010$mse_2007_2010),
+               linetype='dashed') +
+    xlim(c(0.80, 1.5)) +
+    labs(y='Model', x='MSE relative to HAR-RV')
+#ggsave(filename=paste('[analysis]comb', 'group_hgiv', 'mse_2007_2010.png', sep='_'),
+       #path='./article/images/', dpi=300, plot=last_plot(), units='mm', width=145,
+       #height=(4.7 * (n_names_y+3)))
+
+data_plot %>%
+    ggplot(aes(qlike, reorder(group_models, qlike))) +
+    geom_point() +
+    scale_y_discrete(labels=ptex(c(
+        'Grouping(GARCH, HAR)',
+        'Grouping(HAR)',
+        'Grouping(GARCH)',
+        'EqualWeight',
+        'Grouping(GARCH, HAR, IV)',
+        'Grouping(HAR, IV)',
+        'Grouping(GARCH, IV)',
+        'Grouping(IV)'
+    ))) +
+    geom_vline(aes(xintercept=1), linetype='dashed') +
+    geom_vline(aes(xintercept=best_ind_bench$best_qlike_2007_2010$qlike_2007_2010),
+               linetype='dashed') +
+    xlim(c(0.80, 1.75)) +
+    labs(y='Model', x='QLIKE relative to HAR-RV')
+#ggsave(filename=paste('[analysis]comb', 'group_hgiv', 'qlike_2007_2010.png', sep='_'),
+       #path='./article/images/', dpi=300, plot=last_plot(), units='mm', width=145,
+       #height=(4.7 * (n_names_y+3)))
+```
+
+
+### Trimming
+```{r}
+trim_mse_weights <- list.files(path="./data/ftse100/comb_weights_matrix/",
+                           pattern='trim-.*-mse', full.names=TRUE)
+trim_mse_weights <- lapply(X=trim_mse_weights, FUN=read_csv)
+trim_mse_avg_models_exc <- lapply(X=trim_mse_weights, FUN=count_zero_weight_models_per_day,
+                                  exclude_first_n_rows = start_comb_forecast) %>% unlist
+
+trim_qlike_weights <- list.files(path="./data/ftse100/comb_weights_matrix/",
+                                 pattern='trim-.*-qlike', full.names=TRUE)
+trim_qlike_weights <- lapply(X=trim_qlike_weights, FUN=read_csv)
+trim_qlike_avg_models_exc <- lapply(X=trim_qlike_weights, FUN=count_zero_weight_models_per_day,
+                                  exclude_first_n_rows = start_comb_forecast) %>% unlist
+```
+
+```{r}
+data <- data_comb_summ %>%
+    filter(family %in% c('trim-mse', 'trim-qlike2', 'equal_weight'))
+n_names_y <- length(unique(filter(data, family %in% c('trim-mse', 'equal_weight'))))
+```
+
+```{r}
+data %>%
+    filter(family %in% c('trim-mse', 'equal_weight')) %>%
+    ggplot(aes(mse, model_name)) +
+    geom_point() +
+    scale_y_discrete(labels=ptex(c(
+        'EqualWeight',
+        'Trimming^{MSE}(1.0)',
+        'Trimming^{MSE}(1.1)',
+        'Trimming^{MSE}(1.2)',
+        'Trimming^{MSE}(1.3)',
+        'Trimming^{MSE}(1.4)',
+        'Trimming^{MSE}(1.5)',
+        'Trimming^{MSE}(1.6)',
+        'Trimming^{MSE}(1.7)',
+        'Trimming^{MSE}(1.8)',
+        'Trimming^{MSE}(1.9)',
+        'Trimming^{MSE}(2.0)',
+        'Trimming^{MSE}(2.1)',
+        'Trimming^{MSE}(2.2)',
+        'Trimming^{MSE}(2.3)',
+        'Trimming^{MSE}(2.4)',
+        'Trimming^{MSE}(2.5)',
+        'Trimming^{MSE}(2.6)',
+        'Trimming^{MSE}(2.7)',
+        'Trimming^{MSE}(2.8)',
+        'Trimming^{MSE}(2.9)',
+        'Trimming^{MSE}(3.0)'
+    ))) +
+    geom_vline(aes(xintercept=1), linetype='dashed') +
+    geom_vline(aes(xintercept=best_ind_bench$best_mse_2007_2010$mse_2007_2010),
+               linetype='dashed') +
+    xlim(c(0.80, 1.75)) +
+    labs(y='Model', x='MSE relative to HAR-RV')
+#ggsave(filename=paste('[analysis]comb', 'trim', 'mse_2007_2010.png', sep='_'),
+       #path='./article/images/', dpi=300, plot=last_plot(), units='mm', width=145,
+       #height=(4.7 * (n_names_y+3)))
+
+data %>%
+    filter(family %in% c('trim-qlike2', 'equal_weight')) %>%
+    ggplot(aes(qlike, model_name)) +
+    geom_point() +
+    geom_vline(aes(xintercept=1), linetype='dashed') +
+    geom_vline(aes(xintercept=best_ind_bench$best_qlike_2007_2010$qlike_2007_2010),
+               linetype='dashed') +
+    xlim(c(0.80, 1.75)) +
+    scale_y_discrete(labels=ptex(c(
+        'EqualWeight',
+        'Trimming^{QLIKE}(1.0)',
+        'Trimming^{QLIKE}(1.1)',
+        'Trimming^{QLIKE}(1.2)',
+        'Trimming^{QLIKE}(1.3)',
+        'Trimming^{QLIKE}(1.4)',
+        'Trimming^{QLIKE}(1.5)',
+        'Trimming^{QLIKE}(1.6)',
+        'Trimming^{QLIKE}(1.7)',
+        'Trimming^{QLIKE}(1.8)',
+        'Trimming^{QLIKE}(1.9)',
+        'Trimming^{QLIKE}(2.0)',
+        'Trimming^{QLIKE}(2.1)',
+        'Trimming^{QLIKE}(2.2)',
+        'Trimming^{QLIKE}(2.3)',
+        'Trimming^{QLIKE}(2.4)',
+        'Trimming^{QLIKE}(2.5)',
+        'Trimming^{QLIKE}(2.6)',
+        'Trimming^{QLIKE}(2.7)',
+        'Trimming^{QLIKE}(2.8)',
+        'Trimming^{QLIKE}(2.9)',
+        'Trimming^{QLIKE}(3.0)'
+    ))) +
+    labs(y='Model', x='QLIKE relative to HAR-RV')
+#ggsave(filename=paste('[analysis]comb', 'trim', 'qlike_2007_2010.png', sep='_'),
+       #path='./article/images/', dpi=300, plot=last_plot(), units='mm', width=145,
+       #height=(4.7 * (n_names_y+3)))
+```
+
+### Regularization
+```{r}
+data <- data_comb_summ %>%
+    filter(family %in% c('regularization-mse', 'regularization-qlike2'))
+reg_data_mse <- readr::read_csv(file="./data/ftse100/comb_reg_all/regularization_errors_mse_20200717_030017.csv")
+reg_data_mse <- reg_data_mse %>%
+    filter(date_int >= 499) %>%
+    group_by(alpha, lambda) %>%
+    summarise(mse = mean(error) / har_rv_bench$mse_2007_2010)
+reg_data_qlike <- readr::read_csv(file="./data/ftse100/comb_reg_all/regularization_errors_qlike2_20200717_030119.csv")
+reg_data_qlike <- reg_data_qlike %>%
+    filter(date_int >= 499) %>%
+    group_by(alpha, lambda) %>%
+    summarise(qlike = mean(error) / har_rv_bench$qlike_2007_2010)
+```
+
+```{r}
+n_names_y <- length(unique(filter(data, family %in% c('trim-mse', 'equal_weight'))))
+data %>%
+    ggplot(aes(mse, reorder(model_name, mse))) +
+    geom_point() +
+    scale_y_discrete(labels=ptex(c(
+        'Ridge^{QLIKE}',
+        'Ridge^{MSE}',
+        'ElasticNet^{QLIKE}',
+        'Lasso^{QLIKE}',
+        'Lasso^{MSE}',
+        'ElasticNet^{MSE}'
+    ))) +
+    geom_vline(aes(xintercept=1), linetype='dashed') +
+    geom_vline(aes(xintercept=best_ind_bench$best_mse_2007_2010$mse_2007_2010),
+               linetype='dashed') +
+    xlim(c(0.80, 5)) +
+    labs(y='Model', x='MSE relative to HAR-RV')
+#ggsave(filename=paste('[analysis]comb', 'reg', 'mse_2007_2010.png', sep='_'),
+       #path='./article/images/', dpi=300, plot=last_plot(), units='mm', width=145,
+       #height=(4.7 * (n_names_y+3)))
+
+data %>%
+    ggplot(aes(qlike, reorder(model_name, qlike))) +
+    geom_point() +
+    scale_y_discrete(labels=ptex(c(
+        'Ridge^{MSE}',
+        'ElasticNet^{MSE}',
+        'ElasticNet^{QLIKE}',
+        'Lasso^{QLIKE}',
+        'Lasso^{MSE}',
+        'Ridge^{QLIKE}'
+    ))) +
+    geom_vline(aes(xintercept=1), linetype='dashed') +
+    geom_vline(aes(xintercept=best_ind_bench$best_qlike_2007_2010$qlike_2007_2010),
+               linetype='dashed') +
+    xlim(c(0.80, 5)) +
+    labs(y='Model', x='QLIKE relative to HAR-RV')
+#ggsave(filename=paste('[analysis]comb', 'reg', 'qlike_2007_2010.png', sep='_'),
+       #path='./article/images/', dpi=300, plot=last_plot(), units='mm', width=145,
+       #height=(4.7 * (n_names_y+3)))
+```
+
+
+```{r}
+# TODO: finish these
+n_names_y <- length(unique(filter(reg_data_mse,log(lambda) < -15, log(lambda) > -30)$lambda))
+reg_data_mse %>%
+    filter(alpha %in% c(0, 0.5, 1), log(lambda) < -15, log(lambda) > -30) %>%
+    ggplot(aes(mse, log(as.numeric(lambda)), color=as.character(alpha))) +
+    geom_point() +
+    geom_vline(aes(xintercept=1), linetype='dashed') +
+    geom_vline(aes(xintercept=best_ind_bench$best_mse_2007_2010$mse_2007_2010),
+               linetype='dashed') +
+    xlim(c(0.80, 2.5)) +
+    labs(y=TeX('$\\log(\\lambda)$'), x='MSE relative to HAR-RV', color=TeX('$\\alpha$ parameter')) +
+    theme(legend.position = 'bottom')
+#ggsave(filename=paste('[analysis]comb', 'reg_fixed', 'mse_2007_2010.png', sep='_'),
+       #path='./article/images/', dpi=300, plot=last_plot(), units='mm', width=145,
+       #height=(2.75 * (n_names_y+3))) # Note that this is different.
+
+reg_data_qlike %>%
+    filter(alpha %in% c(0, 0.5, 1), log(lambda) < -15, log(lambda) > -30) %>%
+    ggplot(aes(qlike, log(lambda), color=as.character(alpha))) +
+    geom_point() +
+    geom_vline(aes(xintercept=1), linetype='dashed') +
+    geom_vline(aes(xintercept=best_ind_bench$best_qlike_2007_2010$qlike_2007_2010),
+               linetype='dashed') +
+    xlim(c(0.80, 2.5)) +
+    labs(y=TeX('$\\log(\\lambda)$'), x='QLIKE relative to HAR-RV', color=TeX('$\\alpha$ parameter')) +
+    theme(legend.position = 'bottom')
+#ggsave(filename=paste('[analysis]comb', 'reg_fixed', 'qlike_2007_2010.png', sep='_'),
+       #path='./article/images/', dpi=300, plot=last_plot(), units='mm', width=145,
+       #height=(2.75 * (n_names_y+3))) # Note that this is different.
+```
+
+## Summary
+
+```{r}
+data <- data_ind_summ %>%
+    select(model_name, family, family_tex, mse_2007_2010, qlike_2007_2010) %>%
+    rbind(data_comb_summ %>%
+            select(model_name, family, family_tex, mse_2007_2010=mse,
+                   qlike_2007_2010=qlike)) %>%
+    group_by(family) %>%
+    mutate(average_mse = mean(mse_2007_2010),
+           average_qlike = mean(qlike_2007_2010)) %>%
+    ungroup()
+n_names_y <- length(unique(data$family))
+```
+
+```{r}
+data %>%
+    ggplot(aes(mse_2007_2010, reorder(family, average_mse))) +
+    geom_point(aes(alpha=0.25)) +
+    stat_unique(aes(average_mse, reorder(family, average_mse), color='red'), shape='|',  size=4) +
+    scale_color_manual(values = 'red', labels='Average relative MSE of model family') +
+    geom_vline(aes(xintercept=1), linetype='dashed') +
+    geom_vline(aes(xintercept=best_ind_bench$best_mse_2007_2010$mse_2007_2010),
+               linetype='dashed') +
+    scale_y_discrete(labels=ptex(c(
+        'Trimming^{MSE}',
+        'Trimming^{QLIKE}',
+        'EqualWeight',
+        'Grouping',
+        'GARCH',
+        'IV',
+        'HAR',
+        'ARMA^{RV}',
+        'ARMA^{r}',
+        'Naïve^{RV}',
+        'Regularization^{QLIKE}',
+        'Naïve^{r}',
+        'Regularization^{MSE}'
+    ))) +
+    xlim(c(0.8, 3)) +
+    scale_alpha_continuous(labels='Relative MSE of individual model') +
+    labs(y='Model family', x='MSE relative to HAR-RV', color='', alpha='') +
+    theme(legend.position = 'bottom')
+#ggsave(filename=paste('[analysis]comb', 'summ', 'mse_2007_2010.png', sep='_'),
+       #path='./article/images/', dpi=300, plot=last_plot(), units='mm', width=145,
+       #height=(4.7 * (n_names_y+3)))
+
+data %>%
+    ggplot(aes(qlike_2007_2010, reorder(family, average_qlike))) +
+    geom_point(aes(alpha=0.25)) +
+    stat_unique(aes(average_qlike, reorder(family, average_qlike), color='red'), shape='|',  size=4) +
+    scale_color_manual(values = 'red', labels='Average relative QLIKE of model family') +
+    geom_vline(aes(xintercept=1), linetype='dashed') +
+    geom_vline(aes(xintercept=best_ind_bench$best_qlike_2007_2010$qlike_2007_2010),
+               linetype='dashed') +
+    scale_y_discrete(labels=ptex(c(
+        'Trimming^{QLIKE}',
+        'Trimming^{MSE}',
+        'HAR',
+        'EqualWeight',
+        'Grouping',
+        'GARCH',
+        'IV',
+        'ARMA^{RV}',
+        'Naïve^{RV}',
+        'Regularization^{MSE}',
+        'ARMA^{r}',
+        'Regularization^{QLIKE}',
+        'Naïve^{r}'
+    ))) +
+    xlim(c(0.8, 3)) +
+    scale_alpha_continuous(labels='Relative QLIKE of individual model') +
+    labs(y='Model family', x='QLIKE relative to HAR-RV', color='', alpha='') +
+    theme(legend.position = 'bottom')
+#ggsave(filename=paste('[analysis]comb', 'summ', 'qlike_2007_2010.png', sep='_'),
+       #path='./article/images/', dpi=300, plot=last_plot(), units='mm', width=145,
+       #height=(4.7 * (n_names_y+3)))
+```
+
+# MCS test results
+```{r}
+mcs_mse <- get(load(file='./data/ftse100/mcs/results_20200720_084257'))
+mcs_qlike <- get(load(file='./data/ftse100/mcs/results_20200721_021041'))
+```
+
+```{r}
+mcs_mse@show[ , which(colnames(mcs_mse@show) %in% c('Rank_M', 'v_M', 'MCS_M', 'Loss'))] %>%
+    as.data.frame() %>%
+    mutate(model_name = rownames(mcs_mse@show),
+           Loss = Loss / har_rv_bench$mse_2007_2010)
+mcs_qlike@show[ , which(colnames(mcs_qlike@show) %in% c('Rank_M', 'v_M', 'MCS_M', 'Loss'))] %>%
+    as.data.frame() %>%
+    mutate(model_name = rownames(mcs_qlike@show),
+           Loss = Loss / har_rv_bench$qlike_2007_2010)
+
+```
+
+```{r}
+# Which models were excluded?
+all_models <- unique(data_all_forecasts_raw$model_name)
+all_models <- str_replace(all_models, pattern='\\.', replacement='_')
+
+models_included <- row.names(mcs_qlike@show)
+models_included <- row.names(mcs_qlike@show)
+# exp_smooth are there because the MCSprocedure packages changes the names
+all_models[all_models %not_in% models_included]
+```
+```{r}
+mcs_qlike@show[ , which(colnames(mcs_qlike@show) %in% c('Rank_M', 'v_M', 'MCS_M', 'Loss'))] %>%
+    as.data.frame() %>%
+    mutate(model_name = rownames(mcs_qlike@show),
+           Loss = Loss / har_rv_bench$qlike_2007_2010)
+
+mcs_qlike@Bootstrap$Tmax$Stat
+```
+# Appendix
+## Summary statistics
+
+```{r}
+all_measures <- cbind(realised_measures, squared_ret)
+all_measures[['rsv_neg_5']] <- all_measures[['rv_5']] - all_measures[['trv_5']]
+all_measures %>%
+    pivot_longer(-date) %>%
+    group_by(name) %>%
+    mutate(period = ifelse(date < as.Date('2005-01-01'), yes='2000-2004',
+                        no=ifelse(date < as.Date('2007-01-01'), yes='2005-2006',
+                                  no='2007-2010'))) %>%
+    group_by(period, name) %>%
+    summarise(minimum = min(value),
+              mean = mean(value),
+              percentile5 = quantile(value, 0.05),
+              percentile95 = quantile(value, 0.95),
+              maximum = max(value),
+              sd = sd(value),
+              acf1 = acf(value, plot=FALSE, lag.max=5)[['acf']][[2]],
+              acf2 = acf(value, plot=FALSE, lag.max=5)[['acf']][[3]],
+              acf3 = acf(value, plot=FALSE, lag.max=5)[['acf']][[4]],
+              acf4 = acf(value, plot=FALSE, lag.max=5)[['acf']][[5]],
+              acf5 = acf(value, plot=FALSE, lag.max=5)[['acf']][[6]]) %>%
+    Hmisc::format.df(digits=2) # %>%
+    # latex(file='./article/tables/summary_stats.txt', booktabs=TRUE)
+```
+
+## Correlation between predictions
+```{r}
+family_names_ordered <- data_all_forecasts_raw %>%
+    group_by(model_name) %>%
+    summarise(family = family[1]) %>%
+    select(-model_name) %>%
+    unlist %>%
+    as.character
+f1 <- vector(mode='list', length=250*250)
+for (f in family_names_ordered) {
+    f1 <- append(f1, rep(f, 250))
+}
+f1 <- f1 %>% unlist
+avg_corr <- data_all_forecasts_matrix %>%
+    cor %>%
+    as.data.frame() %>%
+    mutate(model_2 = colnames(.)) %>%
+    pivot_longer(-model_2, names_to='model_1', values_to='corr') %>%
+    mutate(family_1 = f1,
+            family_2 = rep(family_names_ordered, 250)) %>%
+    group_by(family_1, family_2) %>%
+    summarise(avg_corr = mean(corr))
+avg_corr_matrix <- avg_corr %>%
+    pivot_wider(names_from = family_2, id_cols = family_1, values_from = avg_corr)
+avg_corr_matrix$family_1 <- sapply(avg_corr_matrix$family_1,
+                                   USE.NAMES=FALSE, FUN=model_family_to_tex)
+colnames(avg_corr_matrix) <- sapply(colnames(avg_corr_matrix),
+                                   USE.NAMES=FALSE, FUN=model_family_to_tex)
+avg_corr_matrix %>%
+    Hmisc::format.df(digits=2) # %>%
+    #latex(file='./article/tables/correlation_families.txt', booktabs=TRUE)
+```
+
+## Table of results
+```{r}
+data_table <- data_ind_summ %>%
+    select(model_name, model_name_tex, family, family_tex, mse_2005_2006,
+           qlike_2005_2006, mse_2007_2010, qlike_2007_2010) %>%
+    mutate(ind_or_comb = 'ind') %>%
+    rbind(data_comb_summ %>%
+            select(model_name, model_name_tex, family, family_tex,
+                   mse_2007_2010=mse, qlike_2007_2010=qlike) %>%
+            mutate(mse_2005_2006 = NA, qlike_2005_2006 = NA,
+                   ind_or_comb = 'comb')
+         ) %>%
+    group_by(family) %>%
+    mutate(average_mse_2007_2010 = mean(mse_2007_2010),
+           average_qlike_2007_2010 = mean(qlike_2007_2010),
+           model_name = str_replace(model_name, pattern='\\.',
+                                    replacement='_')) %>%
+    ungroup()
+mcs_mse <- get(load(file='./data/ftse100/mcs/results_20200720_084257'))
+mcs_mse <- mcs_mse@show[ , which(colnames(mcs_mse@show) %in% c('MCS_M', 'Loss'))] %>%
+        as.data.frame() %>%
+        mutate(model_name = rownames(mcs_mse@show),
+               Loss = Loss / har_rv_bench$mse_2007_2010) %>%
+        rename(MSE_MCS_M = 'MCS_M', mse_loss = 'Loss')
+mcs_qlike <- get(load(file='./data/ftse100/mcs/results_20200721_021041'))
+mcs_qlike <- mcs_qlike@show[ , which(colnames(mcs_qlike@show) %in% c('MCS_M', 'Loss'))] %>%
+    as.data.frame() %>%
+    mutate(model_name = rownames(mcs_qlike@show),
+           Loss = Loss / har_rv_bench$qlike_2007_2010) %>%
+    rename(QLIKE_MCS_M = 'MCS_M', qlike_loss = 'Loss')
+
+```
+
+```{r}
+data_table %>%
+    arrange(ind_or_comb, family, model_name) %>%
+    full_join(mcs_mse, by='model_name') %>%
+    full_join(mcs_qlike, by='model_name') %>%
+    select(-model_name, -family, -ind_or_comb, -mse_loss, -qlike_loss) %>%
+    rename(`Model name` = 'model_name_tex', `Model family` = 'family_tex',
+           `$\\text{MSE}_1$` = 'mse_2005_2006', `$\\text{QLIKE}_1$`="qlike_2005_2006",
+           `$\\text{MSE}_2$`= "mse_2007_2010", `$\\text{QLIKE}_2$`="qlike_2007_2010",
+           `$\\text{Avg}_{\\text{MSE}_2}$` = "average_mse_2007_2010",
+           `$\\text{Avg}_{\\text{QLIKE}_2}$`="average_qlike_2007_2010",
+           `$\\hat{p}_{\\text{MSE}}$`= "MSE_MCS_M",
+           `$\\hat{p}_{\\text{QLIKE}}$`="QLIKE_MCS_M") %>%
+    Hmisc::format.df(digits=2) #  %>%
+    #latex(file='./article/tables/models_mcs.txt', booktabs=TRUE,
+          #multicol=TRUE, landscape=TRUE, caption='Results',
+          #label='app_tab:results_relative')
+
+```
+

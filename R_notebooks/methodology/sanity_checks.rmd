@@ -1,0 +1,358 @@
+---
+title: "Sanity checks/tests"
+date: '2020-09-10'
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+author: David Pinho
+---
+
+These are just some small tests to make sure that the output is the one expected.
+I also did a lot of manual testing for the functions, so I  are working as intended
+*for the parameters I use*. Everything else doesn't come with the warranty.
+
+```{r, setup, include=FALSE}
+# This is the project folder
+knitr::opts_knit$set(root.dir = './../../')
+```
+
+## Import data
+```{r}
+library(tidyverse)
+library(data.table)
+library(ggplot2)
+
+```
+
+```{r}
+# Importing global variables/scripts
+path_global_variables <- here::here('/R_exec/ftse100/global_variables.R')
+invisible(source(path_global_variables))
+script_names <- list.files(path=path_r_scripts, pattern="*.R$", full.names=TRUE)
+invisible(lapply(script_names, FUN=source))
+
+# Importing some data
+invisible(source(path_import_vars))
+data.table::setDTthreads(threads=5)  # Change this if you are running on another PC
+
+# Getting all the other data
+rv_ind_oos <- realised_measures$rv_5[start_forecast:NROW(realised_measures)]
+rv_cv_oos <- realised_measures$rv_5[(start_forecast+start_comb_forecast_cv):NROW(realised_measures)]
+rv_all_oos <- realised_measures$rv_5[(
+    start_forecast+start_comb_forecast_cv+start_comb_forecast):NROW(realised_measures)]
+
+# Getting results
+data_all_forecasts_raw <- join_and_adjust_all_data(path_ind=path_results, path_comb=path_comb_results,
+                                               sum_to_date_int=start_forecast, regex='csv')
+data_all_forecasts_matrix <- data_all_forecasts_raw %>%
+    dplyr::filter(date_int >= (start_forecast+start_comb_forecast_cv+start_comb_forecast)) %>%
+    dplyr::select(date_int, model_name, vol) %>%
+    tidyr::pivot_wider(names_from=model_name, values_from=vol) %>%
+    dplyr::select(-date_int)
+```
+
+Does every model have 1004 observations?
+```{r}
+print(NROW(data_all_forecasts_matrix) == 1004)
+print(NCOL(data_all_forecasts_matrix) == 250)
+print(sum(is.na(data_all_forecasts_matrix)) == 0)
+```
+## Summary statistics
+Which forecasts are equal to or smaller than 0? And does my function solve the problem as expected?
+```{r}
+odd_obs <- data_all_forecasts_matrix <= 0
+models_0 <- colSums(odd_obs)
+print(models_0[models_0 > 0])
+
+corrected_matrix <- apply(X=data_all_forecasts_matrix, FUN=replace_negative_predictions,
+                          MARGIN=2)
+print(colSums(is.na(corrected_matrix))[models_0>0])
+print(corrected_matrix[which(odd_obs)] == (corrected_matrix[which(odd_obs)-1]/2))
+```
+
+Does any model have a weird number of observations?
+```{r}
+possible_values <- c(NROW(realised_measures$rv_5) - start_forecast +1 ,
+                     NROW(realised_measures$rv_5) - (start_forecast+start_comb_forecast_cv) + 1,
+                     NROW(realised_measures$rv_5) - (start_forecast+start_comb_forecast_cv+start_comb_forecast)+1)
+n_obs <- data_all_forecasts_raw %>%
+    group_by(model_name) %>%
+    summarise(n_obs = NROW(na.omit(vol))) %>%
+    count(n_obs)
+print(n_obs)
+print(n_obs$n_obs %in% possible_values)
+```
+
+The 41 values of '2733' are due to naive models, which exclude the first observation in my case:
+```{r}
+data_all_forecasts_raw %>%
+    filter((family == 'naive-iv')|(family == 'naive-rv5')|(family == 'naive-squared_ret')) %>%
+    group_by(model_name) %>%
+    summarise(n_obs = NROW(na.omit(vol))) %>%
+    count(n_obs)
+```
+
+Do all model categories have the correct number of observations?
+```{r}
+data_all_forecasts_raw %>%
+    group_by(family) %>%
+    summarise(n_models = NROW(unique(model_name)))
+```
+
+## Verifying individual models
+Are there any models with relatively unexpected results? Yes:
+    - HAR models seem to do about as well as GARCH models; they "should" do better.
+    - Regularization regression with varying parameters performs much worse than
+      other ways of doing combinations.
+```{r}
+data_anomaly_plot <- data_all_forecasts_raw %>%
+    filter(date_int >= (start_forecast+start_comb_forecast+start_comb_forecast_cv)) %>%
+    dplyr::select(date_int, model_name, family, vol) %>%
+    group_by(model_name) %>%
+    mutate(error_squared = (vol - rv_all_oos)^2) %>%
+    ungroup()
+data_anomaly_plot_clean <-data_anomaly_plot %>%
+    group_by(model_name) %>%
+    summarise(mse = mean(error_squared), family=as.factor(family[1])) %>%
+    mutate(family = fct_reorder(.f=family, .x=mse, .fun=mean))
+
+data_anomaly_plot_clean %>%
+    ggplot(aes(family, mse)) +
+    geom_point() +
+    geom_point(data=data_anomaly_plot_clean %>% group_by(family) %>% summarise(mse = mean(mse)),
+               aes(family, mse), color='red', shape=1, size=4)
+```
+
+First I want to check that all 13 HAR function are using the necessary parameters
+(they are).
+```{r}
+# Importing in-sample results
+path_har_insample <- list.files(path=path_results_fit, pattern='har', full.names = TRUE)
+model_names <- lapply(X=str_split(path_har_insample, pattern = '//'), FUN=last) %>% unlist
+har_insample <- lapply(X=path_har_insample, FUN=function (x) get(load(x)))
+for (i in 1:length(har_insample)) {
+    print(model_names[i])
+    print(har_insample[[i]])
+    print("\n\n")
+}
+```
+
+Now I want to manually replicate one of the results of the most complicated HAR model,
+which is the QS-HAR-C-J.
+```{r}
+# 1 day measures
+rv1 <- realised_measures$rv_5
+c1 <- realised_measures$trv_5
+j1 <- rv1 - c1
+q1 <- realised_measures$rq_5
+s_neg1 <- realised_measures$rsv_5
+s_pos1 <- realised_measures$rv_5 - s_neg1
+q.s_neg1 <- s_neg1 * q1^(1/2)
+q.s_pos1 <- s_pos1 * q1^(1/2)
+# 5 day measures
+c5 <- zoo::rollapply(data=c1, width=5, FUN=mean, partial=FALSE,
+                     align='right', fill=NA)
+j5 <- zoo::rollapply(data=j1, width=5, FUN=mean, partial=FALSE,
+                     align='right', fill=NA)
+# 22 day measures
+c22 <- zoo::rollapply(data=c1, width=22, FUN=mean, partial=FALSE,
+                      align='right', fill=NA)
+j22 <- zoo::rollapply(data=j1, width=22, FUN=mean, partial=FALSE,
+                      align='right', fill=NA)
+# all measures
+har_test_measures <- data.frame(alpha=1, s_neg1 = s_neg1, s_pos1 = s_pos1,
+                                q.s_pos1 = q.s_pos1, q.s_neg1 = q.s_neg1,
+                                j1 = j1, j5 = j5, j22 = j22,
+                                c5 = c5, c22 = c22)
+
+har_forecasts <- vector(mode='list', length=1004)
+start_oos_forecast <- start_forecast+start_comb_forecast_cv+start_comb_forecast
+for (t in start_oos_forecast:NROW(rv_xts)) {
+    fit <- lm(rv_xts[2:(t-1)] ~ as.matrix(har_test_measures[1:(t-2), ])-1)
+    forecast_t <- fit$coefficients %*% t(har_test_measures[(t-1), ])
+    har_forecasts[[t]] <- as.numeric(forecast_t)
+}
+har_forecasts <- unlist(har_forecasts)
+```
+
+Now I compare the forecasts and I get the same results.
+```{r}
+original_forecasts <- data_all_forecasts_raw %>%
+    filter(date_int >= start_oos_forecast,
+           model_name == 'har-c(5, 22)-c(1, 5, 22)-1-NA-1-FALSE')  %>%
+    dplyr::select(vol) %>%
+    unlist
+
+plot(original_forecasts, har_forecasts)
+abline(a=0, b=1)
+print((har_forecasts - rv_all_oos)^2 %>% mean)
+print((original_forecasts - rv_all_oos)^2 %>% mean)
+```
+
+I can also use the HAR function to create an AR(1) model,
+which also gives me the expected results.
+```{r}
+har_test_measures <- data.frame(alpha=1, rv1=rv1)
+har_forecasts <- vector(mode='list', length=1004)
+start_oos_forecast <- start_forecast+start_comb_forecast_cv+start_comb_forecast
+for (t in start_oos_forecast:NROW(rv_xts)) {
+    fit <- lm(rv_xts[2:(t-1)] ~ as.matrix(har_test_measures[1:(t-2), ])-1)
+    forecast_t <- fit$coefficients %*% t(har_test_measures[(t-1), ])
+    har_forecasts[[t]] <- as.numeric(forecast_t)
+}
+har_forecasts <- unlist(har_forecasts)
+```
+
+Comparison (they are not exactly the same because one is estimated with OLS, the other
+with maximum likelihood, so there's a tiny rounding error):
+```{r}
+original_forecasts <- data_all_forecasts_raw %>%
+    filter(date_int >= start_oos_forecast,
+           model_name == 'arima-1-0-0-rv-ML')  %>%
+    dplyr::select(vol) %>%
+    unlist
+
+plot(original_forecasts, har_forecasts)
+abline(a=0, b=1)
+print((har_forecasts - rv_all_oos)^2 %>% mean)
+print((original_forecasts - rv_all_oos)^2 %>% mean)
+```
+
+And, lastly, here's a simpler version of the GARCH.
+```{r}
+spec <- rugarch::ugarchspec(
+        variance.model=list(model='sGARCH', garchOrder=c(1, 1)),
+        mean.model=list(armaOrder=c(0, 0), archm=FALSE,
+                        include.mean=FALSE),
+        distribution.model='norm')
+garch_forecasts <- vector(mode='list', length=1004)
+for (t in start_oos_forecast:NROW(returns_xts)) {
+    garch_fit <- rugarch::ugarchfit(spec=spec, data=returns_xts[1:(t-1)])
+    garch_forecast_t <- rugarch::ugarchforecast(fit=garch_fit, data=returns_xts[1:(t-1)], n.ahead=1)
+    garch_forecasts[[t]] <- garch_forecast_t@forecast$sigmaFor[[1]]^2
+}
+garch_forecasts <- unlist(garch_forecasts)
+```
+
+Once again, only has some tiny rounding errors.
+```{r}
+original_forecasts <- data_all_forecasts_raw %>%
+    filter(date_int >= start_oos_forecast,
+           model_name == 'fGARCH-GARCH-1-1-0-0-FALSE-FALSE-norm')  %>%
+    dplyr::select(vol) %>%
+    unlist
+
+plot(original_forecasts, garch_forecasts)
+abline(a=0, b=1)
+print((garch_forecasts - rv_all_oos)^2 %>% mean)
+print((original_forecasts - rv_all_oos)^2 %>% mean)
+```
+
+## Verifying model comparisons
+For the regularization, the results are very bad for the best models.
+```{r}
+# all measures
+data_reg_test <- data_all_forecasts_raw %>%
+    dplyr::filter(date_int >= start_forecast,
+                  ind_or_comb == 'ind') %>%
+    dplyr::select(date_int, model_name, vol) %>%
+    tidyr::pivot_wider(names_from=model_name, values_from=vol) %>%
+    dplyr::select(-date_int)
+data_reg_test <- apply(X=data_reg_test, FUN=replace_negative_predictions, MARGIN=2)
+lambda_params <- exp(seq(from=-12, -28, length.out=81))  # Has to be in descending order
+reg_forecasts <- matrix(data=NA, nrow=NROW(rv_ind_oos), ncol=length(lambda_params))
+set.seed(1)
+for (t in (start_comb_forecast_cv+1):(NROW(rv_ind_oos))) {
+    # Here we do not need to lag data_reg_test because we would have the estimated forecast
+    # of t-1 at t-2 -- the data is already matched.
+    glmnet_fit <- glmnet::glmnet(alpha=0, family = 'gaussian',
+                          y=as.matrix(rv_ind_oos[1:(t-1)]), x=as.matrix(data_reg_test[1:(t-1), ]),
+                          standardize = FALSE, standardize.response = FALSE,
+                          lambda=lambda_params, maxit=10^8)
+    glmnet_forecast_t <- glmnet::predict.glmnet(object=glmnet_fit,
+                                              newx=as.matrix(data_reg_test[t, , drop=FALSE]))
+    reg_forecasts[t, ] <- glmnet_forecast_t
+}
+reg_forecasts <- na.omit(reg_forecasts)
+```
+
+```{r}
+reg_results_serror <- reg_forecasts %>%
+    apply(X=., FUN=function (x) ((x - rv_cv_oos)^2), MARGIN=2)
+cerror <- reg_results_serror %>%
+    as.data.frame() %>%
+    roll_matrix_mean(matrix=., na.rm = TRUE) %>%
+    lag_columns(as_matrix=FALSE)
+for (row in 1:NROW(cerror)) {
+    if (sum(is.na(cerror[row, ])) == 0) {
+        cerror[row, ] <- rank(cerror[row, ], ties.method='random')
+    }
+}
+weights <- ((cerror == 1)*1)
+pred <- rowSums(reg_forecasts * weights)
+```
+
+This is the only situation where the results are very different from other cases.
+The code is almost identical to the one I use, and the data is the same.
+The differences seem to be due to the quirks/instability of the algorithm.
+There are 8 anomalies for the ridge, although the LASSO has a few more.
+
+```{r}
+(pred[(start_comb_forecast+1):NROW(pred)] - rv_all_oos)^2 %>% mean
+data_all_forecasts_raw %>%
+    filter(model_name == 'lasso-mse', date_int >= (start_oos_forecast)) %>%
+    mutate(y = rv_all_oos,
+           serr = (vol-y)^2) %>%
+    summarise(mean(serr))
+original_forecasts <- data_all_forecasts_raw %>%
+    filter(model_name == 'ridge-mse', date_int >= (start_oos_forecast)) %>%
+    dplyr::select(vol) %>%
+    unlist
+plot(pred[(start_comb_forecast+1):NROW(pred)], original_forecasts)
+abline(a=0, b=1)
+```
+
+```{r}
+which(pred[(start_comb_forecast+1):NROW(pred)] != original_forecasts)
+```
+
+For trimming:
+```{r}
+trimming_ind_matrix <- data_all_forecasts_raw %>%
+    filter(ind_or_comb == 'ind',
+           date_int >= (start_forecast)) %>%
+    dplyr::select(date_int, model_name, vol) %>%
+    tidyr::pivot_wider(names_from=model_name, values_from=vol) %>%
+    dplyr::select(-date_int)
+trim_error <- trimming_ind_matrix %>%
+    apply(X=., FUN=function (x) ((x - rv_ind_oos)^2), MARGIN=2)
+cerror <- trim_error %>%
+    as.data.frame() %>%
+    roll_matrix_mean(matrix=., na.rm = TRUE) %>%
+    lag_columns(as_matrix=FALSE)
+k <- 1.1
+weights <- matrix(data=NA, nrow=NROW(cerror), ncol=NCOL(cerror))
+for (row in 1:NROW(cerror)) {
+    if (sum(is.na(cerror[row, ])) == 0) {
+        # row <- 2
+        min_cerror <- which(rank(cerror[row, ], ties.method='random') == 1)
+        weights[row, ] <- ((cerror[row, ]/as.numeric(cerror[row, ][min_cerror])) < k)*1
+        weights[row, ] <- weights[row, ]/sum(weights[row, ])
+    }
+}
+best_pred <- (trimming_ind_matrix * weights) %>% rowSums()
+```
+
+Another with tiny differences due to rounding error.
+```{r}
+original_forecasts <- data_all_forecasts_raw %>%
+    filter(model_name == 'trim-1.1-mse', date_int >= (start_oos_forecast)) %>%
+    dplyr::select(vol) %>%
+    unlist
+(best_pred[(start_comb_forecast_cv+start_comb_forecast+1):NROW(best_pred)] - rv_all_oos)^2 %>% mean
+(original_forecasts - rv_all_oos)^2 %>% mean
+plot(best_pred[(start_comb_forecast_cv+start_comb_forecast+1):NROW(best_pred)], original_forecasts)
+abline(a=0, b=1)
+```

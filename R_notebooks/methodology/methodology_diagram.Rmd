@@ -1,0 +1,188 @@
+---
+title: "Code for methodology diagram"
+date: '2020-09-07'
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+author: David Pinho
+---
+
+```{r, setup, include=FALSE}
+# This is the project folder
+knitr::opts_knit$set(root.dir = './../../')
+```
+
+```{r}
+library(tidyverse)
+library(hrbrthemes)
+library(latex2exp)
+library(grid)
+library(gridExtra)
+# Instal hrbr fonts if needed. 
+path_article_images <- here::here('article/images/')
+```
+
+```{r}
+data_measures <- readr::read_csv(file='./data/ftse100/measures/realised_measures.csv')
+dates_all <- data_measures$date
+```
+# Diagrams for the methodology
+## In-sample/out-of-sample data split
+```{r}
+data <- data.frame(date = dates_all, 
+                   ind = NA, 
+                   comb_simple = NA)
+tidy_data <- data %>% 
+    mutate(ind = ifelse(date < as.Date('2005-01-01'),
+                        'train', 'test'),
+           comb_simple = ifelse(
+               test=(date >= as.Date('2005-01-01')) & (as.Date(date) <= as.Date('2007-01-01')),
+               yes='train', 
+               no=NA),
+           comb_simple = ifelse(test=date > as.Date('2006-12-31'),
+                                yes='test',
+                                no=comb_simple)) %>% 
+    replace_na(list(ind='nothing', comb_simple='nothing')) %>%
+    tidyr::pivot_longer(cols=-date) %>%
+    mutate(name = factor(name), 
+           name = fct_recode(name, 'Individual models'='ind',
+                             'Model combinations'='comb_simple'))
+
+# I did not know about the existence of geom_segment,
+#  which is why the code is more complicated than it needs to be.
+diagram_samples <- tidy_data %>% 
+    ggplot(aes(date, name, color=value)) +
+    geom_line(size=7) +
+    geom_vline(aes(xintercept=as.Date('2007-01-01')), 
+               linetype='longdash', color='grey50') +
+    geom_vline(aes(xintercept=as.Date('2005-01-01')), 
+               linetype='longdash', color='grey50') +
+    scale_color_manual(values=c('white', 
+                                'royalblue3',
+                                'orange1')) +
+    geom_text(aes(x=as.Date('2006-01-01'),
+                  y=as.factor('Individual models')),
+              data=data.frame(),
+              family = 'roboto',
+              label='Main body \n (less detail)',
+              nudge_y=0.4, 
+              inherit.aes = FALSE) +
+    geom_text(aes(x=as.Date('2009-01-01'), 
+                  y=as.factor('Individual models')),
+              data=data.frame(),
+              family = 'roboto',
+              label='Main body',
+              nudge_y=0.5, 
+              inherit.aes = FALSE) +
+    geom_label(aes(x=as.Date('2009-01-01'), 
+                  y=as.factor('Individual models')),
+              data=data.frame(),
+              family = 'roboto',
+              label='Out-of-sample\n period',
+              color='royalblue4',
+              nudge_y=-0.33, 
+              size=3.35,
+              inherit.aes = FALSE) +
+    geom_label(aes(x=as.Date('2009-01-01'), 
+                  y=as.factor('Model combinations')),
+              data=data.frame(),
+              family = 'roboto',
+              label='Out-of-sample\n period',
+              color='royalblue4',
+              nudge_y=-0.33, 
+              size=3.35,
+              inherit.aes = FALSE) +
+    geom_label(aes(x=as.Date('2002-06-01'), 
+                  y=as.factor('Individual models')),
+              data=data.frame(),
+              family = 'roboto',
+              label='In-sample\n period',
+              color='orange4',
+              nudge_y=-0.33, 
+              size=3.35,
+              inherit.aes = FALSE) +
+    geom_label(aes(x=as.Date('2006-01-01'), 
+                   y=as.factor('Model combinations')),
+              data=data.frame(),
+              family = 'roboto',
+              label='In-sample\n period',
+              color='orange4',
+              nudge_y=-0.33, 
+              size=3.35,
+              inherit.aes = FALSE) +
+    hrbrthemes::theme_ipsum_rc(base_size=11) +
+    theme(legend.position='none',
+          axis.text.y=element_text(color='black'), 
+          axis.title.y=element_blank(),
+          axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          panel.grid.major=element_blank(), 
+          panel.grid.minor=element_blank(), 
+          plot.margin=grid::unit(c(1,1,0,1), units='mm'),
+          axis.line=element_line(colour='grey'))
+diagram_samples
+```
+
+```{r}
+data_measures <- data_measures %>%
+    mutate(rv_5 = sqrt(rv_5*252))
+
+rv_plot <- data_measures %>%
+    ggplot(aes(date, rv_5)) +
+    geom_area(color='black', fill='black') + 
+    geom_vline(aes(xintercept=as.Date('2006-12-21')), 
+               linetype='longdash', color='grey50') +
+    geom_vline(aes(xintercept=as.Date('2005-01-01')), 
+               linetype='longdash', color='grey50') +
+    hrbrthemes::theme_ipsum_rc(base_size=11) +
+    ylab(TeX(string="\\sqrt{252 RV}")) +
+    scale_y_continuous(labels=scales::percent_format(accuracy=1),
+                       expand=c(0, 0), limits = c(0, 1.8)) +
+    scale_x_date(expand=c(0.04, 0.04),
+                 breaks=as.Date(c('2000-01-01',
+                                  '2005-01-01',
+                                  '2007-01-01',
+                                  '2011-01-01')),
+                 labels = c('2000', '2005', 
+                            '2007', '2011')) +
+    xlab('Date') +
+    theme(legend.position='none',
+          axis.title.y=element_text(
+              margin=margin(t=5, r=0, b=0, l=0)),
+          panel.grid.major=element_blank(), 
+          panel.grid.minor=element_blank(), 
+          plot.margin=grid::unit(c(1, 1, 1, 24.3), 'mm'),
+          axis.line=element_line(colour='grey'))
+rv_plot
+```
+
+## Joining the two plots
+These plots used to be aligned, as they are in the thesis, but I mistakenly installed some new version
+of the grid package or tidyverse.
+```{r}
+grid.newpage()
+joint_plot <- grid.arrange(diagram_samples, rv_plot,
+                           ncol=1, heights=c(3.25, 3.5))
+joint_plot
+ggsave(filename='[methodology] test_train_diagram_rv.png',
+       plot=joint_plot,
+       dpi=600, path=path_article_images,
+       width=8, height=5)    
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
