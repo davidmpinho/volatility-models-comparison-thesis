@@ -5,6 +5,7 @@ I cannot share the data because it is proprietary, so I include all the data sou
 how they are structured below. 
 
 You can read the thesis [here](https://github.com/davidmpinho/volatility-models-comparison-thesis/raw/master/david_pinho_final_version.pdf).
+
 Grade: 20/20.
 
 ## Abstract
