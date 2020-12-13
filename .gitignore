@@ -9,6 +9,5 @@
 /data/ftse100/comb_reg_all/
 "data/results/[info_comb] grid_lasso_ridge_enet.csv"
 "data/results/[info_comb] grid_lasso_ridge_enet.csv"
-*.html linguist-detectable=false
 R_notebooks/html_output/* linguist-vendored
 
