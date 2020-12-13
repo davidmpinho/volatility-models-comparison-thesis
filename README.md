@@ -23,14 +23,14 @@ Grade: 20/20.
    repository folder (the one where this README file is in), whether you are running things
    in an IDE or through the terminal (with Rscript).
 4. To see how the data was cleaned and generate the graphs/tables from the article,
-   run the code in the *R_notebooks* folder. 
+   run the code in the */R_notebooks/* folder. 
    If you do not have the data, you can see the output of that code in the 
-   *R_notebooks/html_output* folder.
+   */R_notebooks/html_output/* folder.
 
 ## Repository structure 
 
 (The data folder is not included here for the reasons stated above. If you have the data, you
-only need to create the raw_data folder manually. Everything else is created automatically 
+only need to create the */raw_data/* folder manually. Everything else is created automatically 
 by the code.)  
 
 ```
@@ -114,12 +114,12 @@ by the code.)
   or to run models (such as the Heterogeneous AutoRegressive model, HAR)
   were either incomplete or had a lot of specific functionality missing for my case. 
   All of this being said...
-- ... I do not advise you to re-use the code related to model combinations. I did it in a way that
+- ...I do not advise you to re-use the code related to model combinations. I did it in a way that
   creates some nasty off-by-one bugs that interact among themselves. Lesson learned: do not get 
-  cute with the indexes of data. 
+  cute with indexing. 
 - Lastly, one of the main conclusions of my study is that most models are very similar. This is 
   also often true in any other area where the literature is filled with very incremental model 
-  iteration. Given that, I recommend that you compare models in light of some utility function
+  iterations. Given that, I recommend that you compare models in light of some utility function
   that needs to be maximized (or something analogous to that).  
 
 ## Data structure for the raw data
