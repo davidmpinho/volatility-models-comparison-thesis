@@ -4,7 +4,7 @@ This is the repository for my Master's thesis in Finance from the University of 
 I cannot share the data because it is proprietary, so I include all the data sources and specify 
 how they are structured below. 
 
-You can read the thesis [here](http://repositorium.sdum.uminho.pt/handle/1822/69725).
+You can read the thesis [here](http://repositorium.sdum.uminho.pt/bitstream/1822/69725/1/Dissertacao%20David%20Mendonca%20Pinho.pdf), with additional information [here](http://repositorium.sdum.uminho.pt/handle/1822/69725).
 
 Grade: 20/20.
 
